@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * MCP server para MySQL con múltiples conexiones.
+ * MCP server for MySQL with multiple connections.
  *
- *  - Conexiones: perfiles con nombre, guardados cifrados con DPAPI, con una activa.
- *  - Lectura: libre (SELECT/SHOW/DESCRIBE/EXPLAIN) dentro de una transacción READ ONLY.
- *  - Escritura: en DOS pasos. `propose_write` valida y describe el impacto sin ejecutar
- *    y devuelve un token de un solo uso. `confirm_write` ejecuta solo si el token es
- *    válido, no ha expirado, coincide con la sentencia y con la conexión.
+ *  - Connections: named profiles with one active.
+ *  - Reads: free (SELECT/SHOW/DESCRIBE/EXPLAIN) inside a READ ONLY transaction.
+ *  - Writes: in TWO steps. `propose_write` validates and describes the impact
+ *    without executing and returns a single-use token. `confirm_write` runs only
+ *    if the token is valid, has not expired and matches the statement and the
+ *    connection.
  *
- * También hay una barrera de interfaz: el permiso `ask` de OpenCode sobre confirm_write.
+ * There is also a UI barrier: OpenCode's `ask` permission on confirm_write.
  *
- * El proceso habla MCP por stdio: NUNCA escribir en stdout (usar console.error).
+ * The process speaks MCP over stdio: NEVER write to stdout (use console.error).
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -28,22 +29,23 @@ import {
   setActiveConnection,
   storePath,
   upsertConnection,
-  validarNombre,
+  validateName,
 } from "./store.js";
-import { abrirFormulario } from "./webform.js";
-import { esEntrada } from "./cli-util.js";
+import { openForm } from "./webform.js";
+import { isEntryPoint } from "./cli-util.js";
+import { t } from "./i18n.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-for (const archivo of [
+for (const file of [
   path.join(ROOT, ".env"),
   path.join(process.cwd(), ".env"),
   path.join(path.dirname(process.execPath), ".env"),
 ]) {
   try {
-    process.loadEnvFile(archivo);
+    process.loadEnvFile(file);
     break;
   } catch {
-    // Se prueba el siguiente candidato.
+    // Try the next candidate.
   }
 }
 
@@ -60,23 +62,23 @@ const CONFIG = {
 };
 
 /** ------------------------------------------------------------------ */
-/** Conexiones (perfiles)                                              */
+/** Connections                                                        */
 /** ------------------------------------------------------------------ */
 
-/** nombre -> { host, port, user, password, database, ssl } */
-let perfiles = new Map();
-let activo = "";
-let confirmada = false;
-let confirmadaPara = "";
-let formularioAbierto = false;
+/** name -> { host, port, user, password, database, ssl } */
+let connections = new Map();
+let activeName = "";
+let confirmed = false;
+let confirmedFor = "";
+let activeFormOpen = false;
 
-/** nombre -> { clave, pool } */
+/** name -> { key, pool } */
 const pools = new Map();
 
-const descripcionPerfil = (c) =>
+const describeConnection = (c) =>
   `${c.user}@${c.host}:${Number(c.port) || 3306}/${c.database || "(sin base)"}`;
 
-function perfilDesdeEnv() {
+function profileFromEnv() {
   if (!process.env.MYSQL_USER) return null;
   return {
     host: process.env.MYSQL_HOST || "127.0.0.1",
@@ -88,53 +90,53 @@ function perfilDesdeEnv() {
   };
 }
 
-function recargarPerfiles() {
-  const anteriores = new Set(perfiles.keys());
-  const siguiente = new Map();
+function reloadConnections() {
+  const previousNames = new Set(connections.keys());
+  const next = new Map();
 
-  const desdeEnv = perfilDesdeEnv();
-  if (desdeEnv) siguiente.set("env", desdeEnv);
+  const desdeEnv = profileFromEnv();
+  if (desdeEnv) next.set("env", desdeEnv);
 
   let guardados = { active: "", connections: {} };
   try {
     guardados = loadStore();
   } catch (error) {
-    console.error("[mcp-mysql] no se pudo leer el almacén:", error.message);
+    console.error("[mcp-mysql] could not read the store:", error.message);
   }
 
-  for (const [nombre, credenciales] of Object.entries(guardados.connections)) {
-    // El perfil de entorno no se puede sobrescribir desde el almacén.
-    if (!siguiente.has(nombre)) siguiente.set(nombre, credenciales);
+  for (const [name, creds] of Object.entries(guardados.connections)) {
+    // The environment profile cannot be overwritten from the store.
+    if (!next.has(name)) next.set(name, creds);
   }
 
-  perfiles = siguiente;
+  connections = next;
 
-  if (guardados.active && perfiles.has(guardados.active)) activo = guardados.active;
-  else if (!perfiles.has(activo)) activo = perfiles.has("env") ? "env" : [...perfiles.keys()][0] || "";
+  if (guardados.active && connections.has(guardados.active)) activeName = guardados.active;
+  else if (!connections.has(activeName)) activeName = connections.has("env") ? "env" : [...connections.keys()][0] || "";
 
-  for (const nombre of anteriores) {
-    const credenciales = perfiles.get(nombre);
-    const entrada = pools.get(nombre);
-    if (!credenciales || (entrada && entrada.clave !== JSON.stringify(credenciales))) {
-      if (entrada) entrada.pool.end().catch(() => {});
-      pools.delete(nombre);
+  for (const name of previousNames) {
+    const creds = connections.get(name);
+    const input = pools.get(name);
+    if (!creds || (input && input.key !== JSON.stringify(creds))) {
+      if (input) input.pool.end().catch(() => {});
+      pools.delete(name);
     }
   }
 }
 
-function vigilarAlmacen() {
-  // El CLI escribe el mismo archivo: si cambia por fuera, se recarga sin reiniciar.
-  // Los cambios hechos por el propio MCP ya actualizan perfiles y confirmación.
+function watchStore() {
+  // The CLI writes the same file: external changes are reloaded without a restart.
+  // Changes made by the MCP itself already update connections and confirmation.
   try {
-    fs.watchFile(storePath(), { interval: 1000 }, (actual, anterior) => {
-      if (actual.mtimeMs === anterior.mtimeMs) return;
-      recargarPerfiles();
-      if (confirmadaPara !== activo) {
-        confirmada = false;
-        confirmadaPara = "";
+    fs.watchFile(storePath(), { interval: 1000 }, (current, previous) => {
+      if (current.mtimeMs === previous.mtimeMs) return;
+      reloadConnections();
+      if (confirmedFor !== activeName) {
+        confirmed = false;
+        confirmedFor = "";
       }
       console.error(
-        `[mcp-mysql] almacén recargado desde fuera -> activa=${activo || "-"} conexiones=${[...perfiles.keys()].join(",") || "(ninguna)"}`,
+        `[mcp-mysql] almacén recargado desde fuera -> active=${activeName || "-"} connections=${[...connections.keys()].join(",") || "(ninguna)"}`,
       );
     });
   } catch (error) {
@@ -142,40 +144,38 @@ function vigilarAlmacen() {
   }
 }
 
-function resolverNombre(solicitado) {
-  const nombre = (solicitado || "").trim() || activo;
-  if (nombre && perfiles.has(nombre)) return nombre;
+function resolveConnectionName(solicitado) {
+  const name = (solicitado || "").trim() || activeName;
+  if (name && connections.has(name)) return name;
 
-  const disponibles = [...perfiles.keys()].join(", ") || "(ninguno)";
+  const available = [...connections.keys()].join(", ") || "(ninguno)";
   if (solicitado) {
-    throw new Error(`No existe la conexión "${solicitado}". Disponibles: ${disponibles}.`);
+    throw new Error(t("mcp.conn.notFound", { name: solicitado, available: available }));
   }
-  throw new Error(
-    `No hay conexiones configuradas. Usa save_connection para crear una. Disponibles: ${disponibles}.`,
-  );
+  throw new Error(t("mcp.conn.none", { available: available }));
 }
 
 function getPool(solicitado) {
-  const nombre = resolverNombre(solicitado);
-  const credenciales = perfiles.get(nombre);
-  const clave = JSON.stringify(credenciales);
+  const name = resolveConnectionName(solicitado);
+  const creds = connections.get(name);
+  const key = JSON.stringify(creds);
 
-  const entrada = pools.get(nombre);
-  if (entrada && entrada.clave !== clave) {
-    entrada.pool.end().catch(() => {});
-    pools.delete(nombre);
+  const input = pools.get(name);
+  if (input && input.key !== key) {
+    input.pool.end().catch(() => {});
+    pools.delete(name);
   }
 
-  if (!pools.has(nombre)) {
-    pools.set(nombre, {
-      clave,
+  if (!pools.has(name)) {
+    pools.set(name, {
+      key,
       pool: mysql.createPool({
-        host: credenciales.host,
-        port: Number(credenciales.port) || 3306,
-        user: credenciales.user,
-        password: credenciales.password,
-        database: credenciales.database || undefined,
-        ssl: credenciales.ssl ? { rejectUnauthorized: false } : undefined,
+        host: creds.host,
+        port: Number(creds.port) || 3306,
+        user: creds.user,
+        password: creds.password,
+        database: creds.database || undefined,
+        ssl: creds.ssl ? { rejectUnauthorized: false } : undefined,
         waitForConnections: true,
         connectionLimit: 4,
         maxIdle: 4,
@@ -190,147 +190,145 @@ function getPool(solicitado) {
     });
   }
 
-  return pools.get(nombre).pool;
+  return pools.get(name).pool;
 }
 
-function cerrarPool(nombre) {
-  const entrada = pools.get(nombre);
-  if (entrada) {
-    entrada.pool.end().catch(() => {});
-    pools.delete(nombre);
+function closePool(name) {
+  const input = pools.get(name);
+  if (input) {
+    input.pool.end().catch(() => {});
+    pools.delete(name);
   }
 }
 
-let formularioActivo = null;
+let activeForm = null;
 
-async function abrirDialogoCredenciales({ prefill, nombre } = {}) {
-  if (formularioAbierto) {
+async function openConnectionForm({ prefill, name } = {}) {
+  if (activeFormOpen) {
     return {
-      abierto: false,
-      mensaje: "Ya hay un formulario de conexiones abierto. Termínalo y reintenta.",
-      url: formularioActivo?.url || null,
+      open: false,
+      message: t("mcp.form.open"),
+      url: activeForm?.url || null,
     };
   }
 
-  formularioAbierto = true;
+  activeFormOpen = true;
   try {
-    const formulario = await abrirFormulario({
-      prefill: { ...(prefill || {}), ...(nombre ? { nombre } : {}) },
-      conexiones: [...perfiles.keys()],
-      onDone: (resultado) => {
-        formularioAbierto = false;
-        formularioActivo = null;
-        if (resultado.ok) {
-          activo = resultado.nombre;
-          confirmada = true;
-          confirmadaPara = resultado.nombre;
-          recargarPerfiles();
+    const form = await openForm({
+      prefill: { ...(prefill || {}), ...(name ? { name } : {}) },
+      connections: [...connections.keys()],
+      onDone: (result) => {
+        activeFormOpen = false;
+        activeForm = null;
+        if (result.ok) {
+          activeName = result.name;
+          confirmed = true;
+          confirmedFor = result.name;
+          reloadConnections();
           console.error(
-            `[mcp-mysql] conexión "${resultado.nombre}" guardada -> ${descripcionPerfil(resultado.credentials)}`,
+            `[mcp-mysql] ${t("mcp.form.saved", { name: result.name, target: describeConnection(result.credentials) })}`,
           );
-        } else if (resultado.expirado) {
-          console.error("[mcp-mysql] formulario de conexiones expirado");
+        } else if (result.expirado) {
+          console.error(`[mcp-mysql] ${t("mcp.form.expired")}`);
         } else {
-          console.error("[mcp-mysql] formulario cerrado sin guardar");
+          console.error(`[mcp-mysql] ${t("mcp.form.closed")}`);
         }
       },
     });
 
-    formularioActivo = formulario;
-    console.error(`[mcp-mysql] formulario de conexiones en ${formulario.url}`);
+    activeForm = form;
+    console.error(`[mcp-mysql] ${t("mcp.form.at", { url: form.url })}`);
     return {
-      abierto: true,
-      url: formulario.url,
-      navegador_abierto: formulario.navegador_abierto,
-      mensaje:
-        "Se abrió el formulario de conexiones en el navegador. Al pulsar Guardar queda activa al instante; después reintenta la herramienta.",
+      open: true,
+      url: form.url,
+      browserOpened: form.browserOpened,
+      message:
+        t("mcp.form.message"),
     };
   } catch (excepcion) {
-    formularioAbierto = false;
+    activeFormOpen = false;
     throw excepcion;
   }
 }
 
-function pistaDeError(error) {
+function errorHint(error) {
   return (
     {
-      ECONNREFUSED: "El servidor MySQL no escucha en esa IP/puerto. ¿Está arrancado el servicio?",
-      ETIMEDOUT: "Timeout: revisa firewall, red o VPN.",
-      ENOTFOUND: "El host no resuelve por DNS.",
-      EHOSTUNREACH: "Host inalcanzable desde esta máquina.",
-      ER_ACCESS_DENIED_ERROR: "Usuario o contraseña rechazados. Revisa la conexión con save_connection.",
-      ER_BAD_DB_ERROR: "La base de datos indicada no existe.",
-      ER_NOT_SUPPORTED_AUTH_MODE: "Método de autenticación no soportado por el cliente (mira mysql_native_password).",
-    }[error?.code] || "Revisa los datos de conexión."
+      ECONNREFUSED: t("mcp.hint.refused"),
+      ETIMEDOUT: t("mcp.hint.timeout"),
+      ENOTFOUND: t("mcp.hint.dns"),
+      EHOSTUNREACH: t("mcp.hint.unreachable"),
+      ER_ACCESS_DENIED_ERROR: t("mcp.hint.denied"),
+      ER_BAD_DB_ERROR: t("mcp.hint.badDb"),
+      ER_NOT_SUPPORTED_AUTH_MODE: t("mcp.hint.authMode"),
+    }[error?.code] || t("mcp.hint.generic")
   );
 }
 
 /**
- * Puerta de sesión: hasta que el usuario confirme la base de datos activa, no
- * se ejecuta ninguna operación sobre datos. Así el agente no puede empezar a
- * consultar "la que quedó seleccionada" sin avisar de cuál es.
+ * Session gate: until the user confirms the active database, no
+ * data operation runs. That way the agent cannot start
+ * querying "the one that was left selected" without warning which it is.
  */
-function exigirConfirmacion(conexion) {
-  if (!perfiles.size) return;
+function requireConfirmation(connection) {
+  if (!connections.size) return;
 
-  const objetivo = conexion ? resolverNombre(conexion) : activo;
-  if (!objetivo) return;
-  if (confirmada && confirmadaPara === objetivo) return;
+  const target = connection ? resolveConnectionName(connection) : activeName;
+  if (!target) return;
+  if (confirmed && confirmedFor === target) return;
 
-  const credenciales = perfiles.get(objetivo);
+  const creds = connections.get(target);
   throw new UserError(
-    `BD actual: ${objetivo} → ${credenciales.user}@${credenciales.host}:${credenciales.port}/${credenciales.database || "(sin base)"}\n\n` +
-      "Todavía no se ha confirmado en esta sesión. Muestra este mensaje al usuario y pregúntale:\n" +
-      `  «BD actual: ${objetivo}. ¿Deseas seguir con esta?»\n\n` +
-      "Si dice que sí: llama a confirm_connection.\n" +
-      'Si prefiere otra: use_connection({nombre:"..."}) o confirm_connection({conexion:"..."}).',
+    t("mcp.gate.title", { name: target, target: describeConnection(creds) }) +
+      "\n\n" +
+      t("mcp.gate.body", { name: target }),
   );
 }
 
-/** Activa una conexión (y opcionalmente su base de datos), verificando el acceso. */
-async function activarConexion(nombreSolicitado, database) {
-  const nombreFinal = resolverNombre(nombreSolicitado);
-  const credenciales = { ...perfiles.get(nombreFinal) };
+// Activates a connection (and optionally its database), verifying access.
+async function activateConnection(requestedName, database) {
+  const finalName = resolveConnectionName(requestedName);
+  const creds = { ...connections.get(finalName) };
 
   if (database !== undefined) {
-    credenciales.database = database.trim() || undefined;
-    if (nombreFinal !== "env") {
+    creds.database = database.trim() || undefined;
+    if (finalName !== "env") {
       try {
-        upsertConnection(nombreFinal, credenciales, { activar: true });
+        upsertConnection(finalName, creds, { activate: true });
       } catch (excepcion) {
-        console.error("[mcp-mysql] no se pudo persistir la base de datos:", excepcion.message);
+        console.error("[mcp-mysql] no se pudo persistir la base de data:", excepcion.message);
       }
     }
-    perfiles.set(nombreFinal, credenciales);
-    cerrarPool(nombreFinal);
+    connections.set(finalName, creds);
+    closePool(finalName);
   }
 
-  activo = nombreFinal;
-  if (nombreFinal !== "env") {
+  activeName = finalName;
+  if (finalName !== "env") {
     try {
-      setActiveConnection(nombreFinal);
+      setActiveConnection(finalName);
     } catch {
-      // Si el almacén falla, seguimos con el cambio en memoria.
+      // If the store fails, keep the change in memory.
     }
   }
 
-  const datos = perfiles.get(nombreFinal);
-  const resultado = {
-    activa: nombreFinal,
-    bd_actual: datos.database || null,
-    destino: descripcionPerfil(datos),
+  const data = connections.get(finalName);
+  const result = {
+    active: finalName,
+    currentDatabase: data.database || null,
+    target: describeConnection(data),
   };
 
   try {
-    await getPool(nombreFinal).query("SELECT 1");
-    return { ...resultado, conectado: true };
+    await getPool(finalName).query("SELECT 1");
+    return { ...result, connected: true };
   } catch (error) {
-    return { ...resultado, conectado: false, error: formatError(error), pista: pistaDeError(error) };
+    return { ...result, connected: false, error: formatError(error), hint: errorHint(error) };
   }
 }
 
 /** ------------------------------------------------------------------ */
-/** Utilidades                                                         */
+// Utilities
 /** ------------------------------------------------------------------ */
 
 class UserError extends Error {}
@@ -408,12 +406,12 @@ const SNEAKY_WRITE =
 /** "read" | "write", o lanza UserError. */
 function classify(rawSql) {
   if (typeof rawSql !== "string" || !rawSql.trim()) {
-    throw new UserError("La sentencia SQL está vacía.");
+    throw new UserError(t("mcp.sql.empty"));
   }
   const cleaned = stripComments(rawSql).trim().replace(/;+\s*$/, "");
-  if (!cleaned) throw new UserError("La sentencia SQL está vacía.");
+  if (!cleaned) throw new UserError(t("mcp.sql.empty"));
   if (cleaned.includes(";")) {
-    throw new UserError("Solo se permite UNA sentencia por llamada (sin punto y coma interno).");
+    throw new UserError(t("mcp.sql.oneStatement"));
   }
 
   const first = (cleaned.match(/^[a-z]+/i)?.[0] || "").toLowerCase();
@@ -421,7 +419,7 @@ function classify(rawSql) {
   if (READ_FIRST.has(first)) {
     if (first !== "show" && first !== "describe" && first !== "desc" && SNEAKY_WRITE.test(cleaned)) {
       throw new UserError(
-        "Esa sentencia parece escribir datos (INTO OUTFILE, FOR UPDATE, subconsulta de escritura...). Usa propose_write.",
+        t("mcp.sql.sneakyWrite"),
       );
     }
     return "read";
@@ -434,95 +432,95 @@ function classify(rawSql) {
   if (WRITE_FIRST.has(first)) return "write";
 
   throw new UserError(
-    `Sentencia no permitida ("${first || "?"}"). Solo SELECT/SHOW/DESCRIBE/EXPLAIN para lectura y INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/DROP/TRUNCATE/RENAME para escritura.`,
+    t("mcp.sql.notAllowed", { verbo: first || "?" }),
   );
 }
 
 const normalizar = (sql) => stripComments(sql).trim().replace(/;+\s*$/, "").replace(/\s+/g, " ");
-const hashDe = (sql) => crypto.createHash("sha256").update(normalizar(sql)).digest("hex");
-const esUpdateSinWhere = (sql) =>
+const hashOf = (sql) => crypto.createHash("sha256").update(normalizar(sql)).digest("hex");
+const isUpdateWithoutWhere = (sql) =>
   /^(update|delete)\b/i.test(normalizar(sql)) && !/\bwhere\b/i.test(normalizar(sql));
 
 /** ------------------------------------------------------------------ */
-/** Tokens de confirmación (un solo uso, por conexión)                 */
+// Confirmation tokens (single use, per connection)
 /** ------------------------------------------------------------------ */
 
-const pendientes = new Map();
+const pendingTokens = new Map();
 
-function limpiarTokens() {
-  const ahora = Date.now();
-  for (const [token, item] of pendientes) {
-    if (item.expiraEn <= ahora) pendientes.delete(token);
+function purgeTokens() {
+  const now = Date.now();
+  for (const [token, item] of pendingTokens) {
+    if (item.expiraEn <= now) pendingTokens.delete(token);
   }
 }
 
 /** ------------------------------------------------------------------ */
-/** Ejecución                                                          */
+// Execution
 /** ------------------------------------------------------------------ */
 
-async function ejecutarLectura(sql, conexion, limite) {
-  const conn = await getPool(conexion).getConnection();
+async function runRead(sql, connection, limit) {
+  const conn = await getPool(connection).getConnection();
   try {
     await conn.query("START TRANSACTION READ ONLY");
-    let resultado;
+    let result;
     try {
       const [rows, fields] = await conn.query(sql);
-      resultado = { rows, fields };
+      result = { rows, fields };
     } finally {
       await conn.query("ROLLBACK").catch(() => {});
     }
 
-    const { rows, fields } = resultado;
-    if (!Array.isArray(rows)) return { tipo: "resultado", ...sanitize(rows) };
+    const { rows, fields } = result;
+    if (!Array.isArray(rows)) return { type: "result", ...sanitize(rows) };
 
-    const columnas = (fields || []).map((field) => field.name);
-    const truncado = rows.length > limite;
-    const filas = sanitize(rows.slice(0, limite));
+    const columns = (fields || []).map((field) => field.name);
+    const truncated = rows.length > limit;
+    const limitedRows = sanitize(rows.slice(0, limit));
 
     return {
-      filas: filas.length,
-      columnas,
-      truncado,
-      ...(truncado
-        ? { aviso: `Resultado limitado a ${limite} filas. Afina el WHERE o usa LIMIT/OFFSET.` }
+      rows: limitedRows.length,
+      columns,
+      truncated,
+      ...(truncated
+        ? { warning: t("mcp.rowsLimited", { limit }) }
         : {}),
-      datos: filas,
+      data: limitedRows,
     };
   } finally {
     conn.release();
   }
 }
 
-async function estimarImpacto(sql, conexion) {
-  const tipo = (normalizar(sql).match(/^[a-z]+/i)?.[0] || "").toLowerCase();
-  if (!["update", "delete", "insert", "replace"].includes(tipo)) {
-    return { estimacion: "no aplica", nota: "DDL: no se puede estimar el número de filas afectadas." };
+async function estimateImpact(sql, connection) {
+  const type = (normalizar(sql).match(/^[a-z]+/i)?.[0] || "").toLowerCase();
+  if (!["update", "delete", "insert", "replace"].includes(type)) {
+    return { estimacion: t("mcp.estimate.notApplicable"), nota: t("mcp.estimate.ddl") };
   }
   try {
-    const [rows] = await getPool(conexion).query("EXPLAIN " + normalizar(sql));
-    if (!Array.isArray(rows)) return { estimacion: "desconocida" };
-    const filasEstimadas = rows.reduce((total, row) => total + Number(row.rows || 0), 0);
+    const [rows] = await getPool(connection).query("EXPLAIN " + normalizar(sql));
+    if (!Array.isArray(rows)) return { estimacion: t("mcp.estimate.unknown") };
+    const estimatedRows = rows.reduce((total, row) => total + Number(row.rows || 0), 0);
     return {
-      estimacion: "~" + filasEstimadas + " filas (según EXPLAIN)",
+      estimacion: t("mcp.estimate.rows", { rows: estimatedRows }),
       acceso: rows.map((row) => `${row.table || "?"} [${row.type || "?"}]${row.key ? " key=" + row.key : ""}`),
     };
   } catch (error) {
-    return { estimacion: "desconocida", nota: formatError(error) };
+    return { estimacion: t("mcp.estimate.unknown"), nota: formatError(error) };
   }
 }
 
-async function ejecutarEscritura(sql, conexion) {
-  const conn = await getPool(conexion).getConnection();
+async function runWrite(sql, connection) {
+  const conn = await getPool(connection).getConnection();
   try {
     const [result] = await conn.query(sql);
     if (Array.isArray(result)) {
-      return { tipo: "filas devueltas", filas: sanitize(result.slice(0, CONFIG.maxRows)) };
+      return { type: t("mcp.type.rows"), rows: sanitize(result.slice(0, CONFIG.maxRows)) };
     }
     return {
-      afectadas: result?.affectedRows ?? null,
-      cambiadas: result?.changedRows ?? null,
+      affected: result?.affectedRows ?? null,
+      changed: result?.changedRows ?? null,
       insertId: result?.insertId ?? null,
-      avisos: result?.warningStatus ?? 0,
+      warnings: result?.warningStatus ?? 0,
       info: result?.info || null,
     };
   } finally {
@@ -531,106 +529,83 @@ async function ejecutarEscritura(sql, conexion) {
 }
 
 /** ------------------------------------------------------------------ */
-/** Servidor                                                           */
+// Server
 /** ------------------------------------------------------------------ */
 
 const server = new McpServer(
   { name: "mysql", version: "2.0.0" },
   {
-    instructions: [
-      "Servidor MySQL multi-conexión: lectura directa y escritura confirmada.",
-      "",
-      "CONEXIONES: cada conexión tiene un nombre. `list_connections` muestra las disponibles y cuál está activa.",
-      "`use_connection` cambia la activa. Si el usuario dice «conéctate a ventas», llama a use_connection con ese nombre.",
-      "Cualquier herramienta acepta el parámetro `conexion` para apuntar a otra sin cambiar la activa.",
-      "Si no hay ninguna conexión, llama a `save_connection` (abre el formulario en el navegador).",
-      "Nunca pidas ni escribas contraseñas en el chat.",
-      "",
-      "CONFIRMACIÓN DE SESIÓN (obligatoria):",
-      "La primera operación sobre datos fallará y devolverá «BD actual: X. ¿Deseas seguir con esta?».",
-      "Eso NO es un error: es la puerta de sesión. Muestra ese mensaje al usuario tal cual, pregúntale si desea",
-      "seguir con esa base y, según su respuesta, llama a confirm_connection (o use_connection para cambiar).",
-      "No rodees esta puerta: no intentes otra conexión para evitarla ni la marques como confirmada sin preguntar.",
-      "",
-      "LECTURA: usa query_read. Solo SELECT/SHOW/DESCRIBE/EXPLAIN, en transacción READ ONLY.",
-      "",
-      "ESCRITURA (obligatorio, dos pasos):",
-      "1) propose_write: valida, estima impacto y devuelve un token. NO modifica nada.",
-      "2) Muestra la sentencia y el impacto al usuario y pide confirmación explícita.",
-      "3) Solo entonces, confirm_write con la MISMA sentencia, el token y la misma conexión.",
-      "El token es de un solo uso, caduca y está atado a la conexión.",
-      "Para UPDATE/DELETE sin WHERE hace falta allow_full_table=true.",
-    ].join("\n"),
+    instructions: t("mcp.instructions"),
   },
 );
 
 server.registerTool(
   "connection_info",
   {
-    title: "Estado de la conexión",
+    title: t("mcp.tool.connection_info.title"),
     description:
-      "Muestra la conexión activa (o la indicada), si conecta, versión del servidor y límites. Útil para verificar antes de trabajar.",
+      t("mcp.tool.connection_info.description"),
     inputSchema: {
-      conexion: z.string().optional().describe("Nombre de la conexión. Por defecto, la activa."),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ conexion }) => {
-    const estado = {
-      activa: activo || null,
-      bd_actual: activo && perfiles.has(activo) ? perfiles.get(activo).database || null : null,
-      confirmada_en_sesion: confirmada,
-      requiere_confirmacion: perfiles.size > 0 && !confirmada,
-      disponibles: [...perfiles.keys()],
-      almacen: {
-        archivo: storePath(),
-        existe: hasStoredConnections(),
-        formulario_abierto: formularioAbierto,
-        formulario_url: formularioActivo?.url || null,
+  wrap(async ({ connection }) => {
+    const status = {
+      active: activeName || null,
+      currentDatabase: activeName && connections.has(activeName) ? connections.get(activeName).database || null : null,
+      confirmedInSession: confirmed,
+      requiresConfirmation: connections.size > 0 && !confirmed,
+      available: [...connections.keys()],
+      storeInfo: {
+        file: storePath(),
+        exists: hasStoredConnections(),
+        formOpen: activeFormOpen,
+        formUrl: activeForm?.url || null,
       },
-      limites: {
-        max_filas: CONFIG.maxRows,
-        escritura_habilitada: CONFIG.writeEnabled,
-        tokens_validez_segundos: CONFIG.confirmTtl,
+      limits: {
+        maxRows: CONFIG.maxRows,
+        writeEnabled: CONFIG.writeEnabled,
+        tokenTtlSeconds: CONFIG.confirmTtl,
       },
     };
 
-    if (!perfiles.size) {
+    if (!connections.size) {
       return text({
-        conectado: false,
-        ...estado,
-        ayuda: "No hay conexiones. Llama a save_connection para crear la primera.",
+        connected: false,
+        ...status,
+        help: t("mcp.noConnectionsHelp"),
       });
     }
 
-    let nombre;
+    let name;
     try {
-      nombre = resolverNombre(conexion);
+      name = resolveConnectionName(connection);
     } catch (error) {
-      return text({ conectado: false, ...estado, error: error.message });
+      return text({ connected: false, ...status, error: error.message });
     }
 
-    const credenciales = perfiles.get(nombre);
-    const destino = descripcionPerfil(credenciales);
+    const creds = connections.get(name);
+    const target = describeConnection(creds);
 
     try {
-      const [rows] = await getPool(nombre).query(
-        "SELECT VERSION() AS version, DATABASE() AS base_de_datos, CURRENT_USER() AS usuario, @@hostname AS host, @@port AS puerto",
+      const [rows] = await getPool(name).query(
+        "SELECT VERSION() AS version, DATABASE() AS currentDatabase, CURRENT_USER() AS dbUser, @@hostname AS host, @@port AS port",
       );
       return text({
-        conectado: true,
-        conexion: nombre,
-        destino,
-        servidor: sanitize(rows[0]) || {},
-        ...estado,
+        connected: true,
+        connection: name,
+        target,
+        serverInfo: sanitize(rows[0]) || {},
+        ...status,
       });
     } catch (error) {
       return text({
-        conectado: false,
-        conexion: nombre,
-        destino,
+        connected: false,
+        connection: name,
+        target,
         error: formatError(error),
-        pista: pistaDeError(error),
-        ...estado,
+        hint: errorHint(error),
+        ...status,
       });
     }
   }),
@@ -639,25 +614,25 @@ server.registerTool(
 server.registerTool(
   "list_connections",
   {
-    title: "Listar conexiones",
-    description: "Lista las conexiones guardadas, cuál está activa y a qué base de datos apunta cada una. No muestra contraseñas.",
+    title: t("mcp.tool.list_connections.title"),
+    description: t("mcp.tool.list_connections.description"),
     inputSchema: {},
   },
   wrap(async () => {
-    const lista = [...perfiles.entries()].map(([nombre, credenciales]) => ({
-      nombre,
-      destino: descripcionPerfil(credenciales),
-      base_de_datos: credenciales.database || null,
-      ssl: Boolean(credenciales.ssl),
-      activa: nombre === activo,
-      origen: nombre === "env" ? "variables de entorno" : "almacén cifrado",
+    const available = [...connections.entries()].map(([name, creds]) => ({
+      name,
+      target: describeConnection(creds),
+      database: creds.database || null,
+      ssl: Boolean(creds.ssl),
+      active: name === activeName,
+      origin: name === "env" ? t("mcp.origin.env") : t("mcp.origin.store"),
     }));
 
     return text({
-      total: lista.length,
-      activa: activo || null,
-      conexiones: lista,
-      ...(lista.length === 0 ? { siguiente_paso: "Llama a save_connection para crear la primera." } : {}),
+      total: available.length,
+      active: activeName || null,
+      connections: available,
+      ...(available.length === 0 ? { nextStep: t("mcp.noConnectionsHelp") } : {}),
     });
   }),
 );
@@ -665,22 +640,22 @@ server.registerTool(
 server.registerTool(
   "save_connection",
   {
-    title: "Crear o editar conexión",
+    title: t("mcp.tool.save_connection.title"),
     description:
-      "Abre una ventana nativa de Windows para capturar los datos de una conexión (nombre, host, puerto, usuario, contraseña, base, TLS) y la guarda cifrada con DPAPI. La contraseña nunca pasa por el chat.",
+      t("mcp.tool.save_connection.description"),
     inputSchema: {
-      nombre: z.string().optional().describe("Nombre de la conexión. Si ya existe, se actualiza."),
-      host: z.string().optional().describe("Valor inicial del host."),
-      port: z.number().int().optional().describe("Valor inicial del puerto."),
-      user: z.string().optional().describe("Valor inicial del usuario."),
-      database: z.string().optional().describe("Base de datos por defecto (opcional)."),
-      ssl: z.boolean().optional().describe("Valor inicial de TLS."),
+      name: z.string().optional().describe(t("mcp.param.saveName")),
+      host: z.string().optional().describe(t("mcp.param.hostSave")),
+      port: z.number().int().optional().describe(t("mcp.param.portSave")),
+      user: z.string().optional().describe(t("mcp.param.userSave")),
+      database: z.string().optional().describe(t("mcp.param.databaseSave")),
+      ssl: z.boolean().optional().describe(t("mcp.param.sslSave")),
     },
   },
-  wrap(async ({ nombre, host, port, user, database, ssl }) => {
-    if (nombre) {
-      const problema = validarNombre(nombre);
-      if (problema) throw new UserError(problema);
+  wrap(async ({ name, host, port, user, database, ssl }) => {
+    if (name) {
+      const problem = validateName(name);
+      if (problem) throw new UserError(problem);
     }
 
     const prefill = {};
@@ -690,11 +665,11 @@ server.registerTool(
     if (database !== undefined) prefill.database = database;
     if (ssl !== undefined) prefill.ssl = ssl;
 
-    const resultado = await abrirDialogoCredenciales({ prefill, nombre });
+    const result = await openConnectionForm({ prefill, name });
     return text({
-      ...resultado,
-      guardado_en: storePath(),
-      nota: "También puedes usar el asistente de terminal: npm run login.",
+      ...result,
+      savedIn: storePath(),
+      nota: t("mcp.saveHint"),
     });
   }),
 );
@@ -702,23 +677,23 @@ server.registerTool(
 server.registerTool(
   "use_connection",
   {
-    title: "Cambiar conexión activa",
+    title: t("mcp.tool.use_connection.title"),
     description:
-      "Activa una conexión guardada y opcionalmente cambia su base de datos por defecto. Verifica la conexión y deja el resultado listo para usar.",
+      t("mcp.tool.use_connection.description"),
     inputSchema: {
-      nombre: z.string().describe("Nombre de la conexión a activar."),
-      database: z.string().optional().describe("Base de datos por defecto a usar (opcional)."),
+      name: z.string().describe(t("mcp.param.useName")),
+      database: z.string().optional().describe(t("mcp.param.databaseUse")),
     },
   },
-  wrap(async ({ nombre, database }) => {
-    const resultado = await activarConexion(nombre, database);
-    confirmada = true;
-    confirmadaPara = resultado.activa;
+  wrap(async ({ name, database }) => {
+    const result = await activateConnection(name, database);
+    confirmed = true;
+    confirmedFor = result.active;
     return text({
-      ...resultado,
-      mensaje: resultado.conectado
-        ? `BD actual: ${resultado.activa}. Conexión verificada.`
-        : `BD actual: ${resultado.activa}, pero ahora mismo no conecta.`,
+      ...result,
+      message: result.connected
+        ? t("mcp.activeVerified", { name: result.active })
+        : t("mcp.activeNoConn", { name: result.active }),
     });
   }),
 );
@@ -726,31 +701,31 @@ server.registerTool(
 server.registerTool(
   "confirm_connection",
   {
-    title: "Confirmar la BD de esta sesión",
+    title: t("mcp.tool.confirm_connection.title"),
     description:
-      "Marca la conexión como confirmada para la sesión actual, tras preguntar al usuario. Sin esto, las herramientas de datos se niegan a ejecutar. Permite cambiar de conexión o de base al confirmar.",
+      t("mcp.tool.confirm_connection.description"),
     inputSchema: {
-      conexion: z.string().optional().describe("Conexión a usar. Si se omite, la activa."),
-      database: z.string().optional().describe("Base de datos a usar en esta sesión."),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+      database: z.string().optional().describe(t("mcp.param.databaseUse")),
     },
   },
-  wrap(async ({ conexion, database }) => {
-    if (!perfiles.size) {
+  wrap(async ({ connection, database }) => {
+    if (!connections.size) {
       throw new UserError(
-        "No hay conexiones configuradas. Crea una con save_connection, o ejecuta `mysql-mcp add` en la terminal.",
+        t("mcp.noConnections"),
       );
     }
 
-    const resultado = await activarConexion(conexion, database);
-    confirmada = true;
-    confirmadaPara = resultado.activa;
+    const result = await activateConnection(connection, database);
+    confirmed = true;
+    confirmedFor = result.active;
 
     return text({
-      confirmada: true,
-      ...resultado,
-      mensaje: resultado.conectado
-        ? `BD actual: ${resultado.activa} (${resultado.bd_actual || "sin base por defecto"}). Lista para trabajar.`
-        : `BD actual: ${resultado.activa}, pero no conecta. Revisa la conexión antes de continuar.`,
+      confirmed: true,
+      ...result,
+      message: result.connected
+        ? t("mcp.confirmed", { name: result.active, base: result.currentDatabase || t("common.noDatabase") })
+        : t("mcp.confirmedNoConn", { name: result.active }),
     });
   }),
 );
@@ -758,36 +733,36 @@ server.registerTool(
 server.registerTool(
   "remove_connection",
   {
-    title: "Borrar conexión",
+    title: t("mcp.tool.remove_connection.title"),
     description:
-      "Elimina una conexión guardada (y sus credenciales cifradas). Si era la activa, pasa a otra. No afecta a las variables de entorno.",
+      t("mcp.tool.remove_connection.description"),
     inputSchema: {
-      nombre: z.string().describe("Nombre de la conexión a borrar."),
+      name: z.string().describe(t("mcp.param.removeName")),
     },
   },
-  wrap(async ({ nombre }) => {
-    if (nombre === "env") {
+  wrap(async ({ name }) => {
+    if (name === "env") {
       throw new UserError(
-        "La conexión 'env' viene de variables de entorno (.env); quita MYSQL_USER para eliminarla.",
+        t("mcp.envCannotRemove"),
       );
     }
-    const existia = perfiles.has(nombre);
-    if (!existia) {
-      throw new UserError(`No existe la conexión "${nombre}". Disponibles: ${[...perfiles.keys()].join(", ") || "(ninguno)"}.`);
+    const existed = connections.has(name);
+    if (!existed) {
+      throw new UserError(t("mcp.removeMissing", { name, available: [...connections.keys()].join(", ") || t("common.none") }));
     }
 
-    cerrarPool(nombre);
-    removeConnection(nombre);
-    perfiles.delete(nombre);
-    if (!perfiles.has(activo)) activo = perfiles.has("env") ? "env" : [...perfiles.keys()][0] || "";
-    confirmada = false;
-    confirmadaPara = "";
+    closePool(name);
+    removeConnection(name);
+    connections.delete(name);
+    if (!connections.has(activeName)) activeName = connections.has("env") ? "env" : [...connections.keys()][0] || "";
+    confirmed = false;
+    confirmedFor = "";
 
     return text({
-      borrada: nombre,
-      activa: activo || null,
-      restantes: [...perfiles.keys()],
-      ...(perfiles.size ? { nota: "La nueva conexión activa habrá que confirmarla antes de consultar." } : {}),
+      deleted: name,
+      active: activeName || null,
+      remaining: [...connections.keys()],
+      ...(connections.size ? { nota: t("mcp.removeNote") } : {}),
     });
   }),
 );
@@ -795,25 +770,25 @@ server.registerTool(
 server.registerTool(
   "reset_credentials",
   {
-    title: "Borrar todas las conexiones guardadas",
-    description: "Borra del disco todas las conexiones cifradas y las descarta de memoria. No afecta a las variables de entorno.",
+    title: t("mcp.tool.reset_credentials.title"),
+    description: t("mcp.tool.reset_credentials.description"),
     inputSchema: {},
   },
   wrap(async () => {
-    for (const nombre of [...pools.keys()]) cerrarPool(nombre);
+    for (const name of [...pools.keys()]) closePool(name);
     const borrado = deleteStore();
-    recargarPerfiles();
-    confirmada = false;
-    confirmadaPara = "";
+    reloadConnections();
+    confirmed = false;
+    confirmedFor = "";
 
     return text({
-      archivo_borrado: borrado,
-      archivo: storePath(),
-      activa: activo || null,
-      restantes: [...perfiles.keys()],
-      siguiente_paso: perfiles.size
-        ? "Sigue disponible la conexión de variables de entorno."
-        : "Llama a save_connection para volver a crear una.",
+      fileDeleted: borrado,
+      file: storePath(),
+      active: activeName || null,
+      remaining: [...connections.keys()],
+      nextStep: connections.size
+        ? t("mcp.resetEnvLeft")
+        : t("mcp.resetEmpty"),
     });
   }),
 );
@@ -821,42 +796,42 @@ server.registerTool(
 server.registerTool(
   "list_tables",
   {
-    title: "Listar tablas",
+    title: t("mcp.tool.list_tables.title"),
     description:
-      "Lista tablas y vistas. Sin esquema usa la base de la conexión (o todas las bases visibles si no tiene una por defecto).",
+      t("mcp.tool.list_tables.description"),
     inputSchema: {
-      schema: z.string().optional().describe("Esquema/base de datos a inspeccionar. Opcional."),
-      conexion: z.string().optional().describe("Conexión a usar. Por defecto, la activa."),
+      schema: z.string().optional().describe(t("mcp.param.schema")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ schema, conexion }) => {
-    exigirConfirmacion(conexion);
-    const { nombre, credenciales } = (() => {
-      const n = resolverNombre(conexion);
-      return { nombre: n, credenciales: perfiles.get(n) };
+  wrap(async ({ schema, connection }) => {
+    requireConfirmation(connection);
+    const { name, creds } = (() => {
+      const n = resolveConnectionName(connection);
+      return { name: n, creds: connections.get(n) };
     })();
 
-    const objetivo = schema || credenciales.database;
-    const parametros = [];
-    let filtro = "";
-    if (objetivo) {
-      filtro = " AND table_schema = ?";
-      parametros.push(objetivo);
+    const target = schema || creds.database;
+    const params = [];
+    let filter = "";
+    if (target) {
+      filter = " AND table_schema = ?";
+      params.push(target);
     }
 
-    const [rows] = await getPool(nombre).query(
-      `SELECT table_schema AS esquema, table_name AS tabla, table_type AS tipo,
-              engine AS motor, table_rows AS filas_aprox
+    const [rows] = await getPool(name).query(
+      `SELECT table_schema AS dbSchema, table_name AS dbTable, table_type AS dbType,
+              engine AS engine, table_rows AS approxRows
          FROM information_schema.tables
-        WHERE table_schema NOT IN ('mysql','information_schema','performance_schema','sys')${filtro}
+        WHERE table_schema NOT IN ('mysql','information_schema','performance_schema','sys')${filter}
         ORDER BY table_schema, table_name`,
-      parametros,
+      params,
     );
     return text({
-      conexion: nombre,
+      connection: name,
       total: rows.length,
-      esquema: objetivo || "(todos)",
-      tablas: sanitize(rows),
+      schema: target || t("mcp.allSchemas"),
+      tables: sanitize(rows),
     });
   }),
 );
@@ -864,58 +839,58 @@ server.registerTool(
 server.registerTool(
   "describe_table",
   {
-    title: "Describir tabla",
-    description: "Devuelve columnas, índices y claves foráneas de una tabla.",
+    title: t("mcp.tool.describe_table.title"),
+    description: t("mcp.tool.describe_table.description"),
     inputSchema: {
-      table: z.string().describe("Nombre de la tabla."),
-      schema: z.string().optional().describe("Esquema/base de datos. Opcional."),
-      conexion: z.string().optional().describe("Conexión a usar. Por defecto, la activa."),
+      table: z.string().describe(t("mcp.param.table")),
+      schema: z.string().optional().describe(t("mcp.param.schema")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ table, schema, conexion }) => {
-    exigirConfirmacion(conexion);
-    const nombre = resolverNombre(conexion);
-    const objetivo = schema || perfiles.get(nombre).database;
-    if (!objetivo) {
-      throw new UserError("Indica el esquema/base de datos (esta conexión no tiene una por defecto).");
+  wrap(async ({ table, schema, connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const target = schema || connections.get(name).database;
+    if (!target) {
+      throw new UserError(t("mcp.noSchema"));
     }
 
-    const [columnas] = await getPool(nombre).query(
-      `SELECT column_name AS columna, column_type AS tipo, is_nullable AS nulo,
-              column_default AS por_defecto, column_key AS clave, extra AS extra
+    const [columns] = await getPool(name).query(
+      `SELECT column_name AS dbColumn, column_type AS dbType, is_nullable AS nullable,
+              column_default AS defaultValue, column_key AS dbKey, extra AS extra
          FROM information_schema.columns
         WHERE table_schema = ? AND table_name = ?
         ORDER BY ordinal_position`,
-      [objetivo, table],
+      [target, table],
     );
-    if (!columnas.length) throw new UserError(`No existe la tabla ${objetivo}.${table}.`);
+    if (!columns.length) throw new UserError(t("mcp.tableMissing", { schema: target, table: table }));
 
-    const [indices] = await getPool(nombre).query(
-      `SELECT index_name AS indice, non_unique AS no_unico, seq_in_index AS posicion,
-              column_name AS columna, index_type AS tipo
+    const [indexes] = await getPool(name).query(
+      `SELECT index_name AS dbIndex, non_unique AS notUnique, seq_in_index AS position,
+              column_name AS dbColumn, index_type AS dbType
          FROM information_schema.statistics
         WHERE table_schema = ? AND table_name = ?
         ORDER BY index_name, seq_in_index`,
-      [objetivo, table],
+      [target, table],
     );
 
-    const [foraneas] = await getPool(nombre).query(
-      `SELECT constraint_name AS restriccion, column_name AS columna,
-              referenced_table_schema AS esquema_referenciado,
-              referenced_table_name AS tabla_referenciada,
-              referenced_column_name AS columna_referenciada
+    const [foreignKeys] = await getPool(name).query(
+      `SELECT constraint_name AS dbConstraint, column_name AS dbColumn,
+              referenced_table_schema AS referencedSchema,
+              referenced_table_name AS referencedTable,
+              referenced_column_name AS referencedColumn
          FROM information_schema.key_column_usage
         WHERE table_schema = ? AND table_name = ? AND referenced_table_name IS NOT NULL
         ORDER BY constraint_name`,
-      [objetivo, table],
+      [target, table],
     );
 
     return text({
-      conexion: nombre,
-      tabla: `${objetivo}.${table}`,
-      columnas: sanitize(columnas),
-      indices: sanitize(indices),
-      claves_foraneas: sanitize(foraneas),
+      connection: name,
+      table: `${target}.${table}`,
+      columns: sanitize(columns),
+      indexes: sanitize(indexes),
+      foreignKeys: sanitize(foreignKeys),
     });
   }),
 );
@@ -923,86 +898,86 @@ server.registerTool(
 server.registerTool(
   "query_read",
   {
-    title: "Consultar (solo lectura)",
+    title: t("mcp.tool.query_read.title"),
     description:
-      "Ejecuta SELECT/SHOW/DESCRIBE/EXPLAIN en una transacción READ ONLY. Rechaza escrituras y limita las filas devueltas.",
+      t("mcp.tool.query_read.description"),
     inputSchema: {
-      sql: z.string().describe("Sentencia de lectura. Una sola sentencia, sin punto y coma final."),
-      max_rows: z.number().int().positive().optional().describe(`Máximo de filas (por defecto ${CONFIG.maxRows}).`),
-      conexion: z.string().optional().describe("Conexión a usar. Por defecto, la activa."),
+      sql: z.string().describe(t("mcp.param.sqlRead")),
+      max_rows: z.number().int().positive().optional().describe(t("mcp.param.maxRows", { max: CONFIG.maxRows })),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ sql, max_rows, conexion }) => {
+  wrap(async ({ sql, max_rows, connection }) => {
     if (classify(sql) !== "read") {
       throw new UserError(
-        "query_read es solo para lectura. Para modificar datos usa propose_write y luego confirm_write.",
+        t("mcp.readOnlyChannel"),
       );
     }
-    exigirConfirmacion(conexion);
-    const nombre = resolverNombre(conexion);
-    const limite = Math.min(max_rows || CONFIG.maxRows, 5000);
-    const resultado = await ejecutarLectura(sql, nombre, limite);
-    return text({ conexion: nombre, ...resultado });
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const limit = Math.min(max_rows || CONFIG.maxRows, 5000);
+    const result = await runRead(sql, name, limit);
+    return text({ connection: name, ...result });
   }),
 );
 
 server.registerTool(
   "propose_write",
   {
-    title: "Proponer escritura (paso 1/2)",
+    title: t("mcp.tool.propose_write.title"),
     description:
-      "Valida una sentencia de escritura y devuelve su impacto estimado MÁS un token de confirmación. NO modifica la base de datos. Muestra el resultado al usuario antes de confirmar.",
+      t("mcp.tool.propose_write.description"),
     inputSchema: {
-      sql: z.string().describe("Sentencia de escritura (INSERT/UPDATE/DELETE/REPLACE/CREATE/ALTER/DROP/TRUNCATE/RENAME)."),
-      motivo: z.string().optional().describe("Por qué se necesita el cambio. Ayuda al usuario a decidir."),
-      conexion: z.string().optional().describe("Conexión a usar. Por defecto, la activa."),
+      sql: z.string().describe(t("mcp.param.sqlWrite")),
+      reason: z.string().optional().describe(t("mcp.param.reason")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ sql, motivo, conexion }) => {
+  wrap(async ({ sql, reason, connection }) => {
     if (classify(sql) !== "write") {
-      throw new UserError("Esa sentencia es de lectura. Usa query_read directamente.");
+      throw new UserError(t("mcp.writeIsRead"));
     }
     if (!CONFIG.writeEnabled) {
-      throw new UserError("La escritura está deshabilitada (MYSQL_WRITE_ENABLED=false).");
+      throw new UserError(t("mcp.writeDisabled"));
     }
 
-    exigirConfirmacion(conexion);
-    const nombre = resolverNombre(conexion);
-    const sentencia = normalizar(sql);
-    const impacto = await estimarImpacto(sentencia, nombre);
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const statement = normalizar(sql);
+    const impact = await estimateImpact(statement, name);
 
-    limpiarTokens();
+    purgeTokens();
     const token = crypto.randomUUID();
-    pendientes.set(token, {
-      hash: hashDe(sentencia),
-      sentencia,
-      conexion: nombre,
-      motivo: motivo || null,
+    pendingTokens.set(token, {
+      hash: hashOf(statement),
+      statement,
+      connection: name,
+      reason: reason || null,
       expiraEn: Date.now() + CONFIG.confirmTtl * 1000,
     });
 
-    const avisos = [];
-    if (esUpdateSinWhere(sentencia)) {
-      avisos.push(
-        "ATENCIÓN: la sentencia no tiene WHERE; afectará a TODA la tabla. confirm_write exigirá allow_full_table=true.",
+    const warnings = [];
+    if (isUpdateWithoutWhere(statement)) {
+      warnings.push(
+        t("mcp.warn.fullTable"),
       );
     }
-    if (/^(drop|truncate)\b/i.test(sentencia)) {
-      avisos.push("ATENCIÓN: DDL destructivo. No se puede deshacer.");
+    if (/^(drop|truncate)\b/i.test(statement)) {
+      warnings.push(t("mcp.warn.destructive"));
     }
 
     return text({
-      estado: "PENDIENTE DE CONFIRMACIÓN - no se ha modificado nada",
-      conexion: nombre,
-      destino: descripcionPerfil(perfiles.get(nombre)),
-      sentencia,
-      motivo: motivo || null,
-      impacto,
-      avisos,
+      status: t("mcp.state.pending"),
+      connection: name,
+      target: describeConnection(connections.get(name)),
+      statement,
+      reason: reason || null,
+      impact,
+      warnings,
       token,
-      valido_durante_segundos: CONFIG.confirmTtl,
-      siguiente_paso:
-        "Muestra esta sentencia, la conexión y el impacto al usuario. Si confirma, llama confirm_write con la MISMA sentencia, este token y la misma conexión.",
+      validForSeconds: CONFIG.confirmTtl,
+      nextStep:
+        t("mcp.nextShow"),
     });
   }),
 );
@@ -1010,54 +985,54 @@ server.registerTool(
 server.registerTool(
   "confirm_write",
   {
-    title: "Confirmar escritura (paso 2/2)",
+    title: t("mcp.tool.confirm_write.title"),
     description:
-      "Ejecuta la sentencia SOLO si el token de propose_write es válido, no ha caducado y coincide con la sentencia y la conexión. Consume el token (un solo uso).",
+      t("mcp.tool.confirm_write.description"),
     inputSchema: {
-      sql: z.string().describe("La MISMA sentencia aprobada en propose_write."),
-      token: z.string().describe("Token devuelto por propose_write."),
+      sql: z.string().describe(t("mcp.param.sqlConfirm")),
+      token: z.string().describe(t("mcp.param.token")),
       allow_full_table: z
         .boolean()
         .optional()
-        .describe("Requerido para UPDATE/DELETE sin WHERE. Solo si el usuario lo autorizó explícitamente."),
-      conexion: z.string().optional().describe("Debe coincidir con la conexión de la propuesta."),
+        .describe(t("mcp.param.allowFullTable")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ sql, token, allow_full_table, conexion }) => {
+  wrap(async ({ sql, token, allow_full_table, connection }) => {
     if (!CONFIG.writeEnabled) {
-      throw new UserError("La escritura está deshabilitada (MYSQL_WRITE_ENABLED=false).");
+      throw new UserError(t("mcp.writeDisabled"));
     }
-    if (classify(sql) !== "write") throw new UserError("Esa sentencia no es de escritura.");
+    if (classify(sql) !== "write") throw new UserError(t("mcp.writeIsWrite"));
 
-    limpiarTokens();
-    const pendiente = pendientes.get(token);
-    if (!pendiente) {
+    purgeTokens();
+    const pendingToken = pendingTokens.get(token);
+    if (!pendingToken) {
       throw new UserError(
-        "Token inválido, ya usado o caducado. Vuelve a llamar propose_write y pide confirmación otra vez.",
+        t("mcp.tokenInvalid"),
       );
     }
-    if (pendiente.hash !== hashDe(sql)) {
-      throw new UserError("La sentencia no coincide con la que se propuso. Vuelve a empezar con propose_write.");
+    if (pendingToken.hash !== hashOf(sql)) {
+      throw new UserError(t("mcp.statementMismatch"));
     }
-    if (conexion && conexion !== pendiente.conexion) {
+    if (connection && connection !== pendingToken.connection) {
       throw new UserError(
-        `La propuesta era para la conexión "${pendiente.conexion}", no para "${conexion}". Vuelve a proponer.`,
+        t("mcp.connectionMismatch", { propuesta: pendingToken.connection, pedida: connection }),
       );
     }
-    if (esUpdateSinWhere(sql) && allow_full_table !== true) {
+    if (isUpdateWithoutWhere(sql) && allow_full_table !== true) {
       throw new UserError(
-        "UPDATE/DELETE sin WHERE y sin allow_full_table=true. Confirma con el usuario y reintenta indicando allow_full_table=true.",
+        t("mcp.fullTable"),
       );
     }
 
-    pendientes.delete(token);
-    const resultado = await ejecutarEscritura(sql, pendiente.conexion);
+    pendingTokens.delete(token);
+    const result = await runWrite(sql, pendingToken.connection);
     return text({
-      estado: "EJECUTADO",
-      conexion: pendiente.conexion,
-      destino: descripcionPerfil(perfiles.get(pendiente.conexion) || {}),
-      sentencia: normalizar(sql),
-      resultado,
+      status: t("mcp.state.executed"),
+      connection: pendingToken.connection,
+      target: describeConnection(connections.get(pendingToken.connection) || {}),
+      statement: normalizar(sql),
+      result,
       token_consumido: true,
     });
   }),
@@ -1065,22 +1040,22 @@ server.registerTool(
 
 /** ------------------------------------------------------------------ */
 
-export async function iniciarServidor() {
-  recargarPerfiles();
-  vigilarAlmacen();
+export async function startServer() {
+  reloadConnections();
+  watchStore();
 
   const transporte = new StdioServerTransport();
   await server.connect(transporte);
   console.error(
-    `[mcp-mysql] listo -> conexiones=${[...perfiles.keys()].join(",") || "(ninguna)"} activa=${activo || "-"} escritura=${CONFIG.writeEnabled ? "on" : "off"}`,
+    `[mcp-mysql] listo -> connections=${[...connections.keys()].join(",") || "(ninguna)"} active=${activeName || "-"} escritura=${CONFIG.writeEnabled ? "on" : "off"}`,
   );
 
-  if (!perfiles.size && bool(process.env.MYSQL_PROMPT_ON_START, true)) {
-    const resultado = await abrirDialogoCredenciales();
-    console.error("[mcp-mysql] sin conexiones:", resultado.url || resultado.mensaje);
+  if (!connections.size && bool(process.env.MYSQL_PROMPT_ON_START, true)) {
+    const result = await openConnectionForm();
+    console.error("[mcp-mysql] sin connections:", result.url || result.message);
   }
 }
 
-if (esEntrada(import.meta.url)) {
-  await iniciarServidor();
+if (isEntryPoint(import.meta.url)) {
+  await startServer();
 }

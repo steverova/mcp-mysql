@@ -1,21 +1,22 @@
 /**
- * Almacén de conexiones MySQL — multiplataforma, sin dependencias nativas.
+ * MySQL connection store - cross-platform, no native dependencies.
  *
  *   Windows: %APPDATA%\mcp-mysql\connections.json
- *   macOS/Linux: $XDG_CONFIG_HOME/mcp-mysql/connections.json (o ~/.config/...)
+ *   macOS/Linux: $XDG_CONFIG_HOME/mcp-mysql/connections.json (or ~/.config/...)
  *
- * Formato:
+ * Format:
  *   { version: 3, active: "local", connections: { local: {host,port,user,password,database,ssl} } }
  *
- * El archivo se crea con permisos de solo-usuario (0600 en POSIX, ACL en Windows).
- * Igual que ~/.aws/credentials o ~/.npmrc: es un secreto local protegido por el
- * sistema de archivos, no un cifrado real. Para máxima seguridad, usa variables de
- * entorno o un usuario MySQL con privilegios mínimos.
+ * The file is created with user-only permissions (0600 on POSIX, ACL on Windows).
+ * Like ~/.aws/credentials or ~/.npmrc: a local secret protected by the file
+ * system, not real encryption. For maximum safety use environment variables or a
+ * MySQL user with minimal privileges.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { t } from "./i18n.js";
 
 const FORMATO = 3;
 
@@ -35,90 +36,88 @@ export const hasStoredConnections = () => fs.existsSync(storePath());
 
 const vacio = () => ({ version: FORMATO, active: "", connections: {} });
 
-function normalizar(datos) {
-  if (!datos || typeof datos !== "object") return vacio();
+function normalizar(data) {
+  if (!data || typeof data !== "object") return vacio();
 
-  // Compatibilidad: formatos antiguos con "profiles" o con credenciales sueltas.
-  const origen = datos.connections || datos.profiles || null;
-  if (!origen) {
-    if (datos.user || datos.host) {
-      return { version: FORMATO, active: "default", connections: { default: datos } };
+  // Compatibility: old formats with "profiles" or with loose credentials.
+  const origin = data.connections || data.profiles || null;
+  if (!origin) {
+    if (data.user || data.host) {
+      return { version: FORMATO, active: "default", connections: { default: data } };
     }
     return vacio();
   }
 
-  const conexiones = {};
-  for (const [nombre, credenciales] of Object.entries(origen)) {
-    if (credenciales && typeof credenciales === "object") conexiones[nombre] = credenciales;
+  const connections = {};
+  for (const [name, creds] of Object.entries(origin)) {
+    if (creds && typeof creds === "object") connections[name] = creds;
   }
-  const activa =
-    datos.active && conexiones[datos.active] ? datos.active : Object.keys(conexiones)[0] || "";
+  const active =
+    data.active && connections[data.active] ? data.active : Object.keys(connections)[0] || "";
 
-  return { version: FORMATO, active: activa, connections: conexiones };
+  return { version: FORMATO, active: active, connections: connections };
 }
 
-function restringirPermisos(archivo) {
+function restrictPermissions(file) {
   try {
     if (process.platform === "win32") {
-      const usuario = process.env.USERNAME || os.userInfo().username;
-      spawnSync("icacls", [archivo, "/inheritance:r", "/grant:r", `${usuario}:F`], {
+      const user = process.env.USERNAME || os.userInfo().username;
+      spawnSync("icacls", [file, "/inheritance:r", "/grant:r", `${user}:F`], {
         windowsHide: true,
         stdio: "ignore",
       });
     } else {
-      fs.chmodSync(archivo, 0o600);
+      fs.chmodSync(file, 0o600);
     }
   } catch {
-    // Best effort: si falla, el archivo sigue existiendo con los permisos por defecto.
+    // Best effort: if it fails, the file still exists with default permissions.
   }
 }
 
 export function loadStore() {
-  const archivo = storePath();
-  if (!fs.existsSync(archivo)) return vacio();
+  const file = storePath();
+  if (!fs.existsSync(file)) return vacio();
 
-  const contenido = fs.readFileSync(archivo, "utf8").trim();
+  const contenido = fs.readFileSync(file, "utf8").trim();
   if (!contenido) return vacio();
 
   try {
     return normalizar(JSON.parse(contenido));
   } catch {
-    throw new Error(
-      `El archivo de conexiones está corrupto (${archivo}). Bórralo con \`npm run logout\` y vuelve a configurar.`,
-    );
+    throw new Error(t("store.corrupt", { file }));
   }
 }
 
 export function saveStore(store) {
   const normalizado = normalizar(store);
-  const archivo = storePath();
+  const file = storePath();
 
-  fs.mkdirSync(path.dirname(archivo), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(archivo, JSON.stringify(normalizado, null, 2), { encoding: "utf8", mode: 0o600 });
-  restringirPermisos(archivo);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(normalizado, null, 2), { encoding: "utf8", mode: 0o600 });
+  restrictPermissions(file);
   return normalizado;
 }
 
-export function upsertConnection(nombre, credenciales, { activar = true } = {}) {
+export function upsertConnection(name, creds, { activate = true } = {}) {
   const store = loadStore();
-  store.connections[nombre] = credenciales;
-  if (activar || !store.active || !store.connections[store.active]) store.active = nombre;
+  store.connections[name] = creds;
+  if (activate || !store.active || !store.connections[store.active]) store.active = name;
   return saveStore(store);
 }
 
-export function removeConnection(nombre) {
+export function removeConnection(name) {
   const store = loadStore();
-  if (!store.connections[nombre]) return { borrada: false, store };
+  if (!store.connections[name]) return { deleted: false, store };
 
-  delete store.connections[nombre];
-  if (store.active === nombre) store.active = Object.keys(store.connections)[0] || "";
-  return { borrada: true, store: saveStore(store) };
+  delete store.connections[name];
+  if (store.active === name) store.active = Object.keys(store.connections)[0] || "";
+  return { deleted: true, store: saveStore(store) };
 }
 
-export function setActiveConnection(nombre) {
+export function setActiveConnection(name) {
   const store = loadStore();
-  if (!store.connections[nombre]) throw new Error(`No existe la conexión "${nombre}".`);
-  store.active = nombre;
+  if (!store.connections[name]) throw new Error(`No exists la conexión "${name}".`);
+  store.active = name;
   return saveStore(store);
 }
 
@@ -131,12 +130,12 @@ export function deleteStore() {
   }
 }
 
-export function validarNombre(nombre) {
-  const limpio = String(nombre || "").trim();
-  if (!limpio) return "El nombre de la conexión es obligatorio.";
-  if (limpio.length > 40) return "El nombre no puede pasar de 40 caracteres.";
-  if (!/^[\w .-]+$/.test(limpio)) {
-    return "El nombre solo admite letras, números, espacio, punto y guion.";
+export function validateName(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return t("store.nameRequired");
+  if (trimmed.length > 40) return t("store.nameTooLong");
+  if (!/^[\w .-]+$/.test(trimmed)) {
+    return t("store.nameInvalid");
   }
   return null;
 }

@@ -1,45 +1,95 @@
 # mcp-mysql
 
-Servidor MCP para MySQL con **múltiples conexiones**, **multiplataforma** (Windows, macOS, Linux),
-lectura libre y escritura siempre confirmada en dos pasos.
+MySQL MCP server with **multiple named connections**, **cross-platform** (Windows, macOS, Linux),
+free reads and writes that are always confirmed in two steps.
 
-- Sin dependencias nativas, sin PowerShell, sin ventanas del sistema.
-- Las contraseñas no pasan por el chat: formulario local o asistente de terminal.
-- Ninguna escritura se ejecuta sin una propuesta previa y un token de un solo uso.
-- Antes de consultar, el servidor exige confirmar la base de datos de la sesión.
+- No native dependencies, no PowerShell, no system dialogs.
+- Passwords never go through the chat: local web form or terminal wizard.
+- No write runs without a prior proposal and a single-use token.
+- Before querying, the server requires you to confirm the session's database.
 
-Guía práctica paso a paso: [`USO.md`](USO.md).
+Spanish step-by-step guide: [`USO.md`](USO.md).
 
 ---
 
-## Dos piezas, un mismo archivo
+## Installation
 
-El proyecto tiene dos entradas que **no se llaman entre sí**: comparten el archivo de conexiones.
+```bash
+cd mcp-mysql
+npm install
+npm link                 # installs the global `mysql-mcp` command
+mysql-mcp add            # creates the first connection (opens the browser)
+mysql-mcp doctor         # verifies it connects
+```
+
+If `mysql-mcp` is not found, open a new terminal or run
+`C:\Users\steve\bin\mysql-mcp.cmd` (Windows).
+
+### Standalone binaries (no Node required)
+
+```bash
+npm run build        # current platform only
+npm run build:all    # Windows, Linux and macOS
+```
+
+| File | Platform | Size |
+|---|---|---|
+| `dist/mysql-mcp-windows-x64.exe` | Windows x64 | 84 MB |
+| `dist/mysql-mcp-linux-x64` | Linux x64 | 80 MB |
+| `dist/mysql-mcp-darwin-arm64` | macOS Apple Silicon | 61 MB |
+| `dist/mysql-mcp-darwin-x64` | macOS Intel | 68 MB |
+
+Each binary bundles the runtime, dependencies, CLI and MCP server. No `npm install` and no Node on
+the target machine.
+
+```powershell
+.\dist\mysql-mcp-windows-x64.exe status
+.\dist\mysql-mcp-windows-x64.exe doctor
+```
+
+To make OpenCode use the binary as its server:
+
+```jsonc
+"mysql": {
+  "type": "local",
+  "command": ["C:/Users/steve/mcp-mysql/dist/mysql-mcp-windows-x64.exe", "start"]
+}
+```
+
+The binary looks for `.env` next to the executable and in the current directory. `dist/` is
+git-ignored: binaries are attached to releases, not committed. They are unsigned, so Windows may
+show a SmartScreen warning the first time.
+
+---
+
+## Two parts, one shared file
+
+The project has two entry points that **never call each other**: they share the connections file.
 
 ```
                      ┌──────────────────────────────────┐
-  tú ──terminal──▶   │ mysql-mcp  (CLI)                 │
+  you ──terminal──▶  │ mysql-mcp  (CLI)                 │
                      │ list · add · use · remove        │
                      └───────────────┬──────────────────┘
-                                     │ escribe / lee
+                                     │ reads / writes
                                      ▼
                    %APPDATA%\mcp-mysql\connections.json
                                      ▲
-                                     │ lee (y vigila cambios)
+                                     │ reads and watches changes
                      ┌───────────────┴──────────────────┐
   OpenCode ──spawn─▶ │ node src/index.js  (MCP, stdio)  │──▶ MySQL
-  (lo arranca él)    └──────────────────────────────────┘
+  (it starts it)     └──────────────────────────────────┘
 ```
 
-| | CLI `mysql-mcp` | Servidor MCP `src/index.js` |
+| | CLI `mysql-mcp` | MCP server `src/index.js` |
 |---|---|---|
-| Para quién | Para ti, en una terminal | Para OpenCode |
-| Quién lo arranca | Tú, a mano | OpenCode, al iniciarse |
-| Protocolo | Comandos y salida de texto | JSON-RPC por stdin/stdout |
-| ¿Queda corriendo? | No, termina al acabar | Sí, mientras OpenCode viva |
-| ¿Necesita PATH? | Sí | No (ruta absoluta) |
+| For whom | You, in a terminal | OpenCode |
+| Who starts it | You, manually | OpenCode, at startup |
+| Protocol | Commands and text output | JSON-RPC over stdin/stdout |
+| Keeps running | No | Yes, while OpenCode runs |
+| Needs PATH | Yes | No (absolute path) |
 
-**No hay que arrancar el MCP a mano.** OpenCode lo lanza él mismo leyendo
+**You never start the MCP by hand.** OpenCode spawns it from
 `~/.config/opencode/opencode.json`:
 
 ```jsonc
@@ -49,130 +99,86 @@ El proyecto tiene dos entradas que **no se llaman entre sí**: comparten el arch
 }
 ```
 
-Si ejecutas `mysql-mcp` en una terminal, verás que se queda colgado: está esperando JSON-RPC por
-stdin. Eso es normal, no es un fallo; ciérralo con `Ctrl+C`.
+If you run `mysql-mcp` with no subcommand in a terminal, it will sit waiting for JSON-RPC on
+stdin. That is expected; close it with `Ctrl+C`.
 
-### Cambios en caliente
+### Live changes
 
-El servidor **vigila el archivo** (cada segundo). Si cambias de conexión desde la terminal:
+The server **watches the file** (once per second). If you switch connections from the terminal:
 
 ```powershell
-mysql-mcp use ventas
+mysql-mcp use sales
 ```
 
-el MCP que ya está corriendo lo detecta, recarga las conexiones y te vuelve a pedir confirmación
-(`BD actual: ventas. ¿Deseas seguir con esta?`). No hace falta reiniciar OpenCode.
-
-Lo único que **sí** exige reiniciar es cambiar el **código** del servidor (`src/*.js`).
-
-### Cómo comprobar que el MCP está vivo
-
-En OpenCode, pídelo directamente: «¿en qué base estás?» → responde `connection_info`.
-Desde fuera:
-
-```bash
-opencode mcp list      # si tu versión de OpenCode lo soporta
-```
+the running MCP picks it up, reloads the connections and asks you to confirm again
+(`Current DB: sales. Do you want to continue with this one?`). Only changing the **code** requires
+restarting OpenCode.
 
 ---
 
-## Instalación
+## Language
 
-```bash
-cd mcp-mysql
-npm install
-npm link                 # instala el comando global `mysql-mcp`
-mysql-mcp add            # crea la primera conexión (abre el navegador)
-mysql-mcp doctor         # verifica que conecta
-```
+All messages are available in **Spanish and English**. The language is taken from your system:
 
-Si `mysql-mcp` no aparece, abre una terminal nueva o usa
-`C:\Users\steve\bin\mysql-mcp.cmd` (Windows).
+1. `MCP_MYSQL_LANG=es|en` (forces one)
+2. `LC_ALL` / `LC_MESSAGES` / `LANG` / `LANGUAGE`
+3. The OS regional settings (`Intl`)
+4. English
 
-### Binarios (sin Node instalado)
-
-```bash
-npm run build        # solo tu plataforma
-npm run build:all    # Windows, Linux y macOS
-```
-
-| Archivo | Plataforma | Tamaño |
-|---|---|---|
-| `dist/mysql-mcp-windows-x64.exe` | Windows x64 | 84 MB |
-| `dist/mysql-mcp-linux-x64` | Linux x64 | 79 MB |
-| `dist/mysql-mcp-darwin-arm64` | macOS Apple Silicon | 61 MB |
-| `dist/mysql-mcp-darwin-x64` | macOS Intel | 68 MB |
-
-Cada binario incluye el runtime, las dependencias, el CLI y el servidor MCP. No requiere
-`npm install` ni Node en la máquina destino.
-
-```powershell
-.\dist\mysql-mcp-windows-x64.exe status
-.\dist\mysql-mcp-windows-x64.exe doctor
-```
-
-Y para que OpenCode use el binario como servidor:
-
-```jsonc
-"mysql": {
-  "type": "local",
-  "command": ["C:/Users/steve/mcp-mysql/dist/mysql-mcp-windows-x64.exe", "start"]
-}
-```
-
-El binario busca `.env` junto al ejecutable y en el directorio actual. `dist/` está en
-`.gitignore`: los binarios se adjuntan a un release, no al repositorio. No están firmados, así
-que Windows puede mostrar un aviso de SmartScreen la primera vez.
+Translations live in [`src/locales/es.json`](src/locales/es.json) and
+[`src/locales/en.json`](src/locales/en.json). To add a language, copy one file, translate the
+values and register it in `src/i18n.js`.
 
 ---
 
-## Comandos
+## Commands
 
-| Comando | Qué hace |
+| Command | What it does |
 |---|---|
-| `mysql-mcp status` | BD seleccionada, servidor, base y TLS |
-| `mysql-mcp list` | Todas las conexiones (`*` = activa) |
-| `mysql-mcp add [nombre]` | Crear o editar una conexión (navegador) |
-| `mysql-mcp add --tui` | Igual, con el asistente de terminal |
-| `mysql-mcp form` | Abrir solo el formulario |
-| `mysql-mcp use [nombre]` | Activar una conexión (sin nombre: selector) |
-| `mysql-mcp remove [nombre]` | Borrar una (sin nombre: selector) |
-| `mysql-mcp remove --all` | Borrar todas |
-| `mysql-mcp doctor [--all]` | Probar la conexión activa o todas |
-| `mysql-mcp path` | Ruta del archivo de conexiones |
-| `mysql-mcp` | Arrancar el servidor MCP (lo usa OpenCode) |
+| `mysql-mcp status` | Selected DB, server, database and TLS |
+| `mysql-mcp list` | Every connection (`*` = active) |
+| `mysql-mcp add [name]` | Create or edit a connection (browser) |
+| `mysql-mcp add --tui` | Same, with the terminal wizard |
+| `mysql-mcp form` | Open just the form |
+| `mysql-mcp use [name]` | Activate a connection (no name: picker) |
+| `mysql-mcp remove [name]` | Delete one (no name: picker) |
+| `mysql-mcp remove --all` | Delete all |
+| `mysql-mcp doctor [--all]` | Test the active connection or all of them |
+| `mysql-mcp opencode` | Register the MCP in OpenCode (no JSON editing) |
+| `mysql-mcp path` | Path of the connections file |
+| `mysql-mcp` | Start the MCP server (used by OpenCode) |
 
 ---
 
-## Cómo se capturan las credenciales
+## How credentials are captured
 
-Dos caminos, ninguno mete contraseñas en la conversación:
+Two paths, neither puts passwords in the conversation:
 
-**1. Formulario local.** `save_connection` / `mysql-mcp add` levanta un servidor HTTP en
-`127.0.0.1` con puerto aleatorio y token de un solo uso, y abre el navegador. Solo acepta
-peticiones con ese token, y se cierra al guardar o al expirar (10 min).
+**1. Local form.** `save_connection` / `mysql-mcp add` starts an HTTP server on `127.0.0.1` with a
+random port and a single-use token, and opens the browser. It only accepts requests carrying that
+token and shuts down on save or after 10 minutes.
 
-**2. Asistente de terminal.** `mysql-mcp add --tui` pide los datos en tu terminal, con la
-contraseña enmascarada, y prueba la conexión antes de guardar.
+**2. Terminal wizard.** `mysql-mcp add --tui` asks in your terminal, with the password masked, and
+tests the connection before saving.
 
-> Un servidor MCP por stdio **no puede dibujar en la TUI del cliente**: su stdin/stdout son el
-> canal del protocolo. Cualquier lectura de consola ahí bloquearía el servidor. Por eso el
-> formulario o el asistente, nunca un `prompt` dentro del proceso MCP.
+> A stdio MCP server **cannot draw in the client's TUI**: its stdin/stdout are the protocol
+> channel. Any console read there would block the server. Hence the form or the wizard, never a
+> `prompt` inside the MCP process.
 
 ---
 
-## Dónde se guardan las contraseñas (sin adornos)
+## Where passwords are stored (no sugar-coating)
 
-**Se guardan en texto plano** en un archivo JSON local. No hay cifrado, ni llavero del sistema,
-ni DPAPI. Igual que `~/.aws/credentials` o `~/.npmrc`.
+**They are stored in plain text** in a local JSON file. No encryption, no OS keychain, no DPAPI.
+Same as `~/.aws/credentials` or `~/.npmrc`.
 
-| Sistema | Archivo |
+| System | File |
 |---|---|
 | Windows | `%APPDATA%\mcp-mysql\connections.json` |
-| macOS / Linux | `$XDG_CONFIG_HOME/mcp-mysql/connections.json` → normalmente `~/.config/mcp-mysql/connections.json` |
-| Personalizado | Lo que indique `MCP_MYSQL_STORE` |
+| macOS / Linux | `$XDG_CONFIG_HOME/mcp-mysql/connections.json` → usually `~/.config/mcp-mysql/connections.json` |
+| Custom | Whatever `MCP_MYSQL_STORE` points to |
 
-Contenido real del archivo (ejemplo con datos ficticios):
+Real file contents (example with fictitious data):
 
 ```json
 {
@@ -191,135 +197,132 @@ Contenido real del archivo (ejemplo con datos ficticios):
 }
 ```
 
-### Qué protección existe
+### What protection exists
 
-- El archivo se crea con permisos de **solo tu usuario**: `0600` en macOS/Linux, ACL restrictiva
-  (`icacls`) en Windows. Otros usuarios de la máquina no pueden leerlo.
-- Vive fuera del proyecto, así que no entra en Git por accidente.
-- La contraseña nunca se escribe en `opencode.json`, ni en argumentos de línea de comandos, ni en
-  logs. El servidor no imprime credenciales: solo nombres de conexión y destinos.
+- The file is created **user-only**: `0600` on macOS/Linux, a restrictive ACL (`icacls`) on Windows.
+  Other users on the machine cannot read it.
+- It lives outside the project, so it never lands in Git by accident.
+- The password is never written to `opencode.json`, to command-line arguments or to logs. The server
+  never prints credentials: only connection names and destinations.
 
-### Qué protección NO existe
+### What protection does NOT exist
 
-- **Nada de cifrado en reposo.** Quien pueda leer el archivo con tu usuario, lee la contraseña.
-- Cualquier proceso ejecutándose **como tu usuario** puede leerlo.
-- Entra en copias de seguridad, instantáneas del sistema y, si `%APPDATA%` está sincronizado
-  (OneDrive, iCloud, etc.), en la nube.
-- El formulario envía la contraseña por HTTP en loopback (sin TLS). Es local, pero no está
-  cifrado en tránsito: otro proceso local con privilegios podría observarlo.
-- Las variables de entorno tienen la misma exposición: cualquier proceso hijo puede leerlas.
+- **No encryption at rest.** Anyone who can read the file as your user can read the password.
+- Any process running **as your user** can read it.
+- It is included in backups, system snapshots, and, if `%APPDATA%` is synced (OneDrive, iCloud…),
+  in the cloud.
+- The form sends the password over HTTP on loopback (no TLS). It is local, but not encrypted in
+  transit: another privileged local process could observe it.
+- Environment variables have the same exposure: any child process can read them.
 
-### Cómo reducirlo
+### How to reduce it
 
-1. **Usuario MySQL con privilegios mínimos.** Es la defensa que de verdad importa:
+1. **A least-privilege MySQL user.** This is the protection that actually matters:
 
    ```sql
-   CREATE USER 'mcp'@'localhost' IDENTIFIED BY 'contraseña_larga';
-   GRANT SELECT, INSERT, UPDATE, DELETE ON tu_base.* TO 'mcp'@'localhost';
-   -- sin GRANT ALL, sin DROP, sin acceso a mysql.*
+   CREATE USER 'mcp'@'localhost' IDENTIFIED BY 'long_password';
+   GRANT SELECT, INSERT, UPDATE, DELETE ON your_db.* TO 'mcp'@'localhost';
+   -- no GRANT ALL, no DROP, no access to mysql.*
    ```
 
-2. **Sin contraseña en disco:** define `MYSQL_USER` / `MYSQL_PASSWORD` en el entorno y no crees
-   conexiones guardadas. La conexión `env` manda sobre el archivo.
+2. **No password on disk:** set `MYSQL_USER` / `MYSQL_PASSWORD` in the environment and create no
+   saved connections. The `env` connection takes precedence over the file.
 
-3. **Borrar lo que no uses:** `mysql-mcp remove <nombre>` o `mysql-mcp remove --all`.
+3. **Delete what you don't use:** `mysql-mcp remove <name>` or `mysql-mcp remove --all`.
 
-4. **Solo lectura mientras pruebas:** `MYSQL_WRITE_ENABLED=false`.
+4. **Read-only while testing:** `MYSQL_WRITE_ENABLED=false`.
 
-5. Si el archivo se filtra: cambia la contraseña del usuario MySQL y vuelve a crearla con
+5. If the file leaks: change the MySQL user's password and recreate the connection with
    `mysql-mcp add`.
 
 ---
 
-## Confirmación de sesión
+## Session confirmation
 
-Al arrancar, el servidor no asume nada: la primera operación sobre datos se niega y responde con
-la conexión que quedó seleccionada.
+At startup the server assumes nothing: the first data operation is refused and returns the
+connection that was left selected.
 
 ```
-BD actual: steve_local → steve_local@127.0.0.1:3306/steve_demo
-¿Deseas seguir con esta?
+Current DB: steve_local → steve_local@127.0.0.1:3306/steve_demo
+Do you want to continue with this one?
 ```
 
-- Si aceptas: el agente llama a `confirm_connection` y continúa.
-- Si prefieres otra: `use_connection` o `confirm_connection({conexion:"..."})`.
-- Se pide una vez por proceso; al reiniciar OpenCode vuelve a preguntar.
-- `query_read`, `list_tables`, `describe_table` y `propose_write` están bloqueadas hasta entonces.
+- If you accept: the agent calls `confirm_connection` and continues.
+- If you prefer another: `use_connection` or `confirm_connection({conexion:"..."})`.
+- It is asked once per process; restarting OpenCode asks again.
+- `query_read`, `list_tables`, `describe_table` and `propose_write` are blocked until then.
 
 ---
 
-## Herramientas
+## Tools
 
-| Herramienta | ¿Modifica datos? |
+| Tool | Modifies data? |
 |---|---|
 | `connection_info` | No |
 | `list_connections` | No |
 | `list_tables`, `describe_table` | No |
-| `query_read` (`SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`, transacción `READ ONLY`) | No |
-| `propose_write` (valida, estima impacto, devuelve token) | **No** |
-| `confirm_write` (ejecuta solo con token válido) | Sí |
-| `save_connection`, `use_connection`, `confirm_connection` | No (configuración) |
-| `remove_connection`, `reset_credentials` | No (solo borran configuración) |
+| `query_read` (`SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`, `READ ONLY` transaction) | No |
+| `propose_write` (validates, estimates impact, returns a token) | **No** |
+| `confirm_write` (runs only with a valid token) | Yes |
+| `save_connection`, `use_connection`, `confirm_connection` | No (configuration) |
+| `remove_connection`, `reset_credentials` | No (configuration only) |
 
-Todas las herramientas de datos aceptan `conexion` para apuntar a otra conexión sin cambiar la
-activa.
-
----
-
-## Escritura en dos pasos
-
-```
-propose_write(sql, conexion?)  ->  { token, impacto, avisos }   sin cambios en la BD
-        ↓ se muestra al usuario, que confirma
-confirm_write(sql, token, conexion?)  ->  { estado: "EJECUTADO", afectadas: N }
-```
-
-- Token de un solo uso, caduca a los `MYSQL_CONFIRM_TTL_SECONDS` (300 s por defecto).
-- La sentencia confirmada debe ser idéntica a la propuesta (hash) **y de la misma conexión**.
-- `UPDATE`/`DELETE` sin `WHERE` exige `allow_full_table=true`.
-- `DROP`/`TRUNCATE` se marcan como destructivos.
-- Una sola sentencia por llamada, sin `;` interno.
-- Los tokens viven en memoria: al reiniciar, hay que volver a proponer.
+Every data tool accepts `conexion` to target another connection without changing the active one.
 
 ---
 
-## Variables de entorno
+## Two-step writes
 
-| Variable | Defecto | Descripción |
+```
+propose_write(sql, conexion?)  ->  { token, impact, warnings }   nothing changed
+        ↓ shown to the user, who confirms
+confirm_write(sql, token, conexion?)  ->  { estado: "EXECUTED", affected: N }
+```
+
+- Single-use token, expires after `MYSQL_CONFIRM_TTL_SECONDS` (300 s by default).
+- The confirmed statement must be identical to the proposal (hash) **and from the same connection**.
+- `UPDATE`/`DELETE` without `WHERE` requires `allow_full_table=true`.
+- `DROP`/`TRUNCATE` are flagged as destructive.
+- One statement per call, no internal `;`.
+- Tokens live in memory: after a restart you must propose again.
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
 |---|---|---|
-| `MYSQL_HOST` / `MYSQL_PORT` | `127.0.0.1` / `3306` | Solo si defines `MYSQL_USER` (crea la conexión `env`) |
-| `MYSQL_USER` | vacío | Si tiene valor, manda sobre el archivo |
-| `MYSQL_PASSWORD` | vacío | Contraseña de `env` |
-| `MYSQL_DATABASE` | vacío | Base por defecto de `env` |
+| `MYSQL_HOST` / `MYSQL_PORT` | `127.0.0.1` / `3306` | Only if `MYSQL_USER` is set (creates the `env` connection) |
+| `MYSQL_USER` | empty | If set, it wins over the file |
+| `MYSQL_PASSWORD` | empty | Password for `env` |
+| `MYSQL_DATABASE` | empty | Default database for `env` |
 | `MYSQL_SSL` | `false` | TLS |
-| `MYSQL_PROMPT_ON_START` | `true` | Abre el formulario al arrancar si no hay conexiones |
-| `MYSQL_MAX_ROWS` | `200` | Filas máximas por consulta |
-| `MYSQL_WRITE_ENABLED` | `true` | Interruptor global de escritura |
-| `MYSQL_CONFIRM_TTL_SECONDS` | `300` | Validez del token |
-| `MYSQL_CONNECT_TIMEOUT_MS` | `10000` | Timeout de conexión |
-| `MCP_MYSQL_STORE` | ruta por defecto | Archivo de conexiones alternativo |
-| `MCP_MYSQL_NO_BROWSER` | — | `1` evita abrir el navegador (imprime la URL) |
+| `MYSQL_PROMPT_ON_START` | `true` | Opens the form at startup if there are no connections |
+| `MYSQL_MAX_ROWS` | `200` | Maximum rows per query |
+| `MYSQL_WRITE_ENABLED` | `true` | Global write switch |
+| `MYSQL_CONFIRM_TTL_SECONDS` | `300` | Token lifetime |
+| `MYSQL_CONNECT_TIMEOUT_MS` | `10000` | Connection timeout |
+| `MCP_MYSQL_STORE` | default path | Alternative connections file |
+| `MCP_MYSQL_LANG` | OS locale | Forces `es` or `en` |
+| `MCP_MYSQL_NO_BROWSER` | — | `1` avoids opening the browser (prints the URL) |
 
 ---
 
-## Registro en OpenCode
+## Registering in OpenCode
 
-Lo normal es no tocar JSON a mano:
+You normally don't edit JSON by hand:
 
 ```bash
-mysql-mcp opencode            # configuración global (~/.config/opencode/opencode.json)
-mysql-mcp opencode --project  # ./opencode.json del proyecto actual
-mysql-mcp opencode --dry-run  # ver qué cambiaría, sin escribir
+mysql-mcp opencode            # global config (~/.config/opencode/opencode.json)
+mysql-mcp opencode --project  # ./opencode.json of the current project
+mysql-mcp opencode --dry-run  # show what it would change
 ```
 
-Escribe o reemplaza `mcp.mysql`, añade los permisos `mysql_confirm_write` y
-`mysql_reset_credentials` en `ask`, conserva el resto de tu configuración y deja una copia
-`opencode.json.bak-<fecha>`. Es idempotente: si ya estaba, no cambia nada.
+It writes or replaces `mcp.mysql`, adds the `mysql_confirm_write` and
+`mysql_reset_credentials` permissions as `ask`, keeps the rest of your configuration and leaves an
+`opencode.json.bak-<date>` backup. It is idempotent: if it was already there, nothing changes.
 
-Si el binario compilado es el que ejecuta el comando, la entrada apunta al propio `.exe` con
-`"start"`; si corres desde el código, apunta a `node src/index.js`.
-
-El resultado es este:
+Result:
 
 ```jsonc
 {
@@ -338,70 +341,74 @@ El resultado es este:
 }
 ```
 
-También puedes usar el comando nativo de OpenCode, aunque no gestiona los permisos:
+You can also use OpenCode's native command, although it does not manage permissions:
 
 ```bash
 opencode mcp add mysql --global -- node C:/Users/steve/mcp-mysql/src/index.js
-opencode mcp list   # comprueba que conecta
+opencode mcp list
 ```
 
-El permiso `ask` es la barrera visible en la interfaz; el token del servidor es la barrera real y
-sigue funcionando aunque ejecutes con `--auto`.
+The `ask` permission is the visible barrier in the UI; the server token is the real barrier and
+still works when you run with `--auto`.
 
 ---
 
-## Estructura del proyecto
+## Project layout
 
 ```
 mcp-mysql/
-├─ bin/mysql-mcp.js      CLI global
-├─ src/index.js          servidor MCP (12 herramientas)
-├─ src/store.js          almacén de conexiones
-├─ src/webform.js        formulario local
-├─ src/wizard.js         asistente de terminal
-├─ src/form.js           formulario suelto
-├─ src/doctor.js         diagnóstico
-├─ test/                 handshake · store · webform
-├─ USO.md                guía práctica
-└─ README.md             este documento
+├─ bin/mysql-mcp.js      global CLI
+├─ src/index.js          MCP server (12 tools)
+├─ src/store.js          connections store
+├─ src/webform.js        local form
+├─ src/wizard.js         terminal wizard
+├─ src/form.js           standalone form
+├─ src/doctor.js         diagnostics
+├─ src/opencode.js       OpenCode registration
+├─ src/i18n.js           language detection
+├─ src/locales/          es.json · en.json
+├─ test/                 handshake · store · webform · reload · opencode · binary
+├─ USO.md                guide (Spanish)
+└─ README.md             this document
 ```
 
-### Qué no se versiona (`.gitignore`)
+### Not versioned (`.gitignore`)
 
 - `node_modules/`
-- `.env` y `.env.*` (solo se versiona `.env.example`)
-- `connections.json` y cualquier `credentials*.json`
-- Scripts temporales (`dbg*.mjs`, `probe*.mjs`, `demo.mjs`…), que suelen acabar con contraseñas
-  escritas a mano
-- Volcados de base de datos, logs, builds y archivos de sistema/editor
+- `.env` and `.env.*` (only `.env.example` is versioned)
+- `connections.json` and any `credentials*.json`
+- Temporary scripts (`dbg*.mjs`, `probe*.mjs`, `demo.mjs`…), which often end up with hand-written
+  passwords
+- Database dumps, logs, builds and OS/editor files
 
-La contraseña vive fuera del proyecto, así que el repositorio no la contiene; el `.gitignore` es
-la red de seguridad por si alguien apunta `MCP_MYSQL_STORE` dentro de la carpeta.
+The password lives outside the project, so the repository never contains it; the `.gitignore` is a
+safety net in case someone points `MCP_MYSQL_STORE` inside the folder.
 
 ---
 
-## Pruebas
+## Tests
 
 ```bash
 npm run test:all
 ```
 
-- `test/handshake.mjs` — protocolo MCP, 12 herramientas, clasificación SQL, multi-conexión.
-- `test/store.mjs` — perfiles, activa, migración de formatos antiguos, archivo corrupto, nombres.
-- `test/webform.mjs` — token, validaciones, guardado y activación.
-- `test/reload.mjs` — el MCP ve en caliente lo que cambia el CLI.
+- `test/handshake.mjs` — MCP protocol, 12 tools, SQL classification, multi-connection.
+- `test/store.mjs` — profiles, active connection, migration from old formats, corrupt file, names.
+- `test/webform.mjs` — token, validation, saving and activation.
+- `test/reload.mjs` — the MCP picks up CLI changes without restarting.
+- `test/opencode.mjs` — registration is idempotent and preserves existing config.
+- `test/binary.mjs` — the compiled binary runs the CLI and the MCP server.
 
-46 comprobaciones, sin necesidad de un MySQL vivo.
+60 checks, no live MySQL needed.
 
 ---
 
-## Limitaciones conocidas
+## Known limitations
 
-- **Sin cifrado en reposo** (ver arriba). Para un llavero del sistema habría que añadir una
-  dependencia nativa; hoy no está.
-- **La contraseña permanece en memoria** del proceso mientras la conexión está en uso. Es
-  inevitable para conectar.
-- **No hay OpenTUI dentro de OpenCode**: un MCP por stdio no puede dibujar en la TUI del cliente.
-  OpenTUI solo sería viable en `mysql-mcp add` ejecutado con Bun, y no aporta nada que el
-  asistente actual no haga.
-- **Tokens de escritura en memoria**: reiniciar el servidor invalida cualquier propuesta pendiente.
+- **No encryption at rest** (see above). A system keychain would need a native dependency; not
+  included today.
+- **The password stays in process memory** while the connection is in use. Unavoidable in order to
+  connect.
+- **No OpenTUI inside OpenCode**: a stdio MCP cannot draw in the client's TUI. OpenTUI would only be
+  viable for `mysql-mcp add` under Bun, and adds nothing the current wizard does not do.
+- **Write tokens live in memory**: restarting the server invalidates any pending proposal.

@@ -1,130 +1,129 @@
 /**
- * Registro del servidor en OpenCode, sin editar JSON a mano.
+ * Registers the server in OpenCode without editing JSON by hand.
  *
- * Escribe (o reemplaza) la entrada `mcp.mysql` y los permisos de escritura,
- * conservando el resto de la configuración y dejando una copia de seguridad.
+ * Writes (or replaces) the `mcp.mysql` entry and the write permissions,
+ * keeping the rest of the configuration and leaving a backup file.
  *
- *   mysql-mcp opencode            config global
- *   mysql-mcp opencode --project  ./opencode.json del proyecto
+ *   mysql-mcp opencode            global config
+ *   mysql-mcp opencode --project  ./opencode.json of the current project
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { arrancar, esEntrada } from "./cli-util.js";
+import { runCli, isEntryPoint } from "./cli-util.js";
+import { t } from "./i18n.js";
 
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const color = (codigo, texto) => (process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto);
 const ok = (texto) => color("32", texto);
-const tenue = (texto) => color("90", texto);
+const dim = (texto) => color("90", texto);
 const mal = (texto) => color("31", texto);
-const aviso = (texto) => color("33", texto);
+const warning = (texto) => color("33", texto);
 
-/** Ruta del opencode.json global. */
-export function rutaGlobal() {
+// Path of the global opencode.json.
+export function globalConfigPath() {
   if (process.env.MCP_MYSQL_OPENCODE_CONFIG) return process.env.MCP_MYSQL_OPENCODE_CONFIG;
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(base, "opencode", "opencode.json");
 }
 
 /**
- * Comando con el que OpenCode debe lanzar el servidor:
- * si somos un binario compilado, el propio ejecutable con "start";
- * si corremos sobre Node, node + src/index.js.
+ * The command OpenCode should use to launch the server:
+ * as a compiled binary, the executable itself with "start";
+ * on Node, node + src/index.js.
  */
-export function comandoServidor() {
-  const ejecutable = path.basename(process.execPath).toLowerCase();
-  const esRuntime = ["node", "node.exe", "bun", "bun.exe"].includes(ejecutable);
-  const aBarras = (ruta) => ruta.replace(/\\/g, "/");
-  if (!esRuntime) return [aBarras(process.execPath), "start"];
-  return ["node", aBarras(path.join(RAIZ, "src", "index.js"))];
+export function serverCommand() {
+  const executableName = path.basename(process.execPath).toLowerCase();
+  const isRuntime = ["node", "node.exe", "bun", "bun.exe"].includes(executableName);
+  const toSlashes = (filePath) => filePath.replace(/\\/g, "/");
+  if (!isRuntime) return [toSlashes(process.execPath), "start"];
+  return ["node", toSlashes(path.join(RAIZ, "src", "index.js"))];
 }
 
-function leerConfig(archivo) {
-  if (!fs.existsSync(archivo)) return { config: {}, existia: false };
+function readConfig(file) {
+  if (!fs.existsSync(file)) return { config: {}, existed: false };
 
-  const texto = fs.readFileSync(archivo, "utf8").replace(/^\uFEFF/, "").trim();
-  if (!texto) return { config: {}, existia: true };
+  const texto = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
+  if (!texto) return { config: {}, existed: true };
 
   try {
-    return { config: JSON.parse(texto), existia: true };
+    return { config: JSON.parse(texto), existed: true };
   } catch {
-    throw new Error(
-      `${archivo} tiene comentarios o no es JSON válido. Ábrelo y añade la entrada a mano, o usa --project con un archivo limpio.`,
-    );
+    throw new Error(t("opencode.invalidJson", { file }));
   }
 }
 
 /**
- * Aplica el registro sobre un objeto de configuración. Idempotente.
- * Devuelve qué cambió.
+ * Applies the registration to a config object. Idempotent.
+ * Returns what changed.
  */
-export function aplicar(config, comando) {
-  const cambios = [];
+export function applyRegistration(config, command) {
+  const changes = [];
 
   config.mcp = config.mcp && typeof config.mcp === "object" ? config.mcp : {};
-  const entrada = {
+  const input = {
     type: "local",
-    command: comando,
+    command: command,
     enabled: true,
     timeout: 15000,
   };
 
-  const anterior = JSON.stringify(config.mcp.mysql);
-  if (anterior !== JSON.stringify(entrada)) {
-    config.mcp.mysql = entrada;
-    cambios.push(anterior === undefined ? "añadida la entrada mcp.mysql" : "actualizada la entrada mcp.mysql");
+  const previous = JSON.stringify(config.mcp.mysql);
+  if (previous !== JSON.stringify(input)) {
+    config.mcp.mysql = input;
+    changes.push(previous === undefined ? t("opencode.added") : t("opencode.updated"));
   }
 
   config.permission = config.permission && typeof config.permission === "object" ? config.permission : {};
-  for (const clave of ["mysql_confirm_write", "mysql_reset_credentials"]) {
-    if (config.permission[clave] !== "ask") {
-      config.permission[clave] = "ask";
-      cambios.push(`permiso ${clave} = ask`);
+  for (const key of ["mysql_confirm_write", "mysql_reset_credentials"]) {
+    if (config.permission[key] !== "ask") {
+      config.permission[key] = "ask";
+      changes.push(t("opencode.permission", { key }));
     }
   }
 
-  return cambios;
+  return changes;
 }
 
-export async function ejecutarOpenCode(argumentos = process.argv.slice(2)) {
-  const proyecto = argumentos.includes("--project") || argumentos.includes("--local");
-  const soloVer = argumentos.includes("--dry-run");
-  const archivo = proyecto ? path.join(process.cwd(), "opencode.json") : rutaGlobal();
+export async function runOpenCode(args = process.argv.slice(2)) {
+  const project = args.includes("--project") || args.includes("--local");
+  const dryRun = args.includes("--dry-run");
+  const file = project ? path.join(process.cwd(), "opencode.json") : globalConfigPath();
 
-  const { config, existia } = leerConfig(archivo);
-  const cambios = aplicar(config, comandoServidor());
+  const { config, existed } = readConfig(file);
+  const changes = applyRegistration(config, serverCommand());
 
-  console.log(tenue(`Configuración: ${archivo}${existia ? "" : " (nueva)"}`));
-  console.log(tenue(`Comando:       ${JSON.stringify(config.mcp.mysql.command)}`));
+  console.log(dim(`${t("opencode.config")}: ${file}${existed ? "" : t("opencode.new")}`));
+  console.log(dim(`${t("opencode.command")}: ${JSON.stringify(config.mcp.mysql.command)}`));
 
-  if (!cambios.length) {
-    console.log(ok("\nYa estaba registrado, sin cambios."));
-    console.log(tenue("Reinicia OpenCode para que lo cargue."));
+  if (!changes.length) {
+    console.log(ok("\n" + t("opencode.already")));
+    console.log(dim(t("opencode.restart")));
     return;
   }
 
-  if (soloVer) {
-    console.log(aviso("\nCambios que aplicaría (--dry-run):"));
-    for (const cambio of cambios) console.log(`  · ${cambio}`);
+  if (dryRun) {
+    console.log(warning("\n" + t("opencode.changes")));
+    for (const cambio of changes) console.log(`  · ${cambio}`);
     return;
   }
 
-  if (existia) {
-    const copia = `${archivo}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-    fs.copyFileSync(archivo, copia);
-    console.log(tenue(`Copia de seguridad: ${copia}`));
+  if (existed) {
+    const backupPath = `${file}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    fs.copyFileSync(file, backupPath);
+    console.log(dim(`${t("opencode.backup")}: ${backupPath}`));
   }
 
-  fs.mkdirSync(path.dirname(archivo), { recursive: true });
-  fs.writeFileSync(archivo, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
-  console.log(ok("\nRegistrado:"));
-  for (const cambio of cambios) console.log(`  · ${cambio}`);
-  console.log(tenue("\nReinicia OpenCode para que cargue el servidor."));
+  console.log(ok("\n" + t("opencode.registered")));
+  for (const cambio of changes) console.log(`  · ${cambio}`);
+  console.log(dim("\n" + t("opencode.finalRestart")));
 }
 
-if (esEntrada(import.meta.url)) {
-  arrancar(() => ejecutarOpenCode());
+if (isEntryPoint(import.meta.url)) {
+  runCli(() => runOpenCode());
 }

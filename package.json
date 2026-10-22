@@ -1,8 +1,8 @@
 {
   "name": "mcp-mysql",
-  "version": "2.2.1",
+  "version": "2.4.0",
   "private": true,
-  "description": "Servidor MCP para MySQL multi-conexión, multiplataforma, con escritura en dos pasos",
+  "description": "MySQL MCP server: multiple connections, cross-platform, two-step confirmed writes",
   "type": "module",
   "main": "src/index.js",
   "bin": {

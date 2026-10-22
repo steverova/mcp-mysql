@@ -1,105 +1,106 @@
 /**
- * Formulario local para capturar conexiones MySQL.
+ * Local form to capture MySQL connections.
  *
- * Se levanta un servidor HTTP en 127.0.0.1 (puerto aleatorio) y se abre el
- * navegador. Funciona igual en Windows, macOS, Linux y WSL; no hay dependencias
- * nativas ni código específico de plataforma. La contraseña viaja por loopback
- * y nunca entra en el historial del chat ni en la configuración de OpenCode.
+ * It starts an HTTP server on 127.0.0.1 (random port) and opens the browser.
+ * Works the same on Windows, macOS, Linux and WSL; no native dependencies and no
+ * platform-specific code. The password travels over loopback and never reaches
+ * the chat history or the OpenCode configuration.
  */
 import http from "node:http";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
-import { upsertConnection, validarNombre } from "./store.js";
+import { upsertConnection, validateName } from "./store.js";
+import { LANGUAGE, t } from "./i18n.js";
 
-const escapar = (valor) =>
-  String(valor ?? "").replace(
+const escapeHtml = (value) =>
+  String(value ?? "").replace(
     /[&<>"']/g,
     (caracter) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[caracter],
   );
 
-function abrirNavegador(url) {
+function openBrowser(url) {
   if (process.env.MCP_MYSQL_NO_BROWSER === "1") return false;
 
-  let comando;
-  let argumentos;
+  let command;
+  let args;
   if (process.platform === "win32") {
-    comando = "cmd.exe";
-    argumentos = ["/c", "start", "", url];
+    command = "cmd.exe";
+    args = ["/c", "start", "", url];
   } else if (process.platform === "darwin") {
-    comando = "open";
-    argumentos = [url];
+    command = "open";
+    args = [url];
   } else if (process.env.WSL_DISTRO_NAME) {
-    comando = "wslview";
-    argumentos = [url];
+    command = "wslview";
+    args = [url];
   } else {
-    comando = "xdg-open";
-    argumentos = [url];
+    command = "xdg-open";
+    args = [url];
   }
 
   try {
-    const hijo = spawn(comando, argumentos, { detached: true, stdio: "ignore", windowsHide: true });
-    hijo.on("error", () => {});
-    hijo.unref();
+    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.on("error", () => {});
+    child.unref();
     return true;
   } catch {
     return false;
   }
 }
 
-function pagina({ token, conexiones = [], prefill = {}, error, guardada } = {}) {
-  const opciones = conexiones
-    .map((nombre) => `<option value="${escapar(nombre)}"></option>`)
+function renderPage({ token, connections = [], prefill = {}, error, saved } = {}) {
+  const options = connections
+    .map((name) => `<option value="${escapeHtml(name)}"></option>`)
     .join("");
 
-  if (guardada) {
-    return `<!doctype html><html lang="es"><head><meta charset="utf-8">
-<title>Conexión guardada</title><style>${ESTILOS}</style></head>
+  if (saved) {
+    return `<!doctype html><html lang="${LANGUAGE}"><head><meta charset="utf-8">
+<title>${t("webform.savedTitle")}</title><style>${STYLES}</style></head>
 <body><main class="tarjeta">
-  <h1>✅ Conexión guardada</h1>
-  <p>Se guardó <strong>${escapar(guardada)}</strong> y quedó activa.</p>
-  <p class="nota">Ya puedes cerrar esta pestaña y volver a OpenCode.</p>
+  <h1>✅ ${t("webform.savedTitle")}</h1>
+  <p>${t("webform.savedBody", { name: escapeHtml(saved) })}</p>
+  <p class="nota">${t("webform.savedHint")}</p>
 </main></body></html>`;
   }
 
   if (error) {
-    return `<!doctype html><html lang="es"><head><meta charset="utf-8">
-<title>Error</title><style>${ESTILOS}</style></head>
+    return `<!doctype html><html lang="${LANGUAGE}"><head><meta charset="utf-8">
+<title>${t("webform.errorTitle")}</title><style>${STYLES}</style></head>
 <body><main class="tarjeta">
-  <h1>⚠️ No se pudo guardar</h1>
-  <p class="error">${escapar(error)}</p>
-  <p><a href="/?token=${escapar(token)}">Volver al formulario</a></p>
+  <h1>⚠️ ${t("webform.errorTitle")}</h1>
+  <p class="error">${escapeHtml(error)}</p>
+  <p><a href="/?token=${escapeHtml(token)}">${t("webform.back")}</a></p>
 </main></body></html>`;
   }
 
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
-<title>Nueva conexión MySQL</title><style>${ESTILOS}</style></head>
+  return `<!doctype html><html lang="${LANGUAGE}"><head><meta charset="utf-8">
+<title>${t("webform.newTitle")}</title><style>${STYLES}</style></head>
 <body><main class="tarjeta">
-  <h1>Nueva conexión MySQL</h1>
-  <p class="nota">Los datos se guardan en tu equipo. La contraseña no pasa por el chat.</p>
-  <form method="post" action="/guardar">
-    <input type="hidden" name="token" value="${escapar(token)}">
-    <label>Nombre
-      <input name="nombre" value="${escapar(prefill.nombre || "")}" list="existentes" required maxlength="40" placeholder="local, ventas, produccion...">
-      <datalist id="existentes">${opciones}</datalist>
+  <h1>${t("webform.newTitle")}</h1>
+  <p class="nota">${t("webform.note")}</p>
+  <form method="post" action="/save">
+    <input type="hidden" name="token" value="${escapeHtml(token)}">
+    <label>${t("webform.name")}
+      <input name="name" value="${escapeHtml(prefill.name || "")}" list="existingNames" required maxlength="40" placeholder="${t("webform.namePlaceholder")}">
+      <datalist id="existingNames">${options}</datalist>
     </label>
-    <div class="fila">
-      <label>Host<input name="host" value="${escapar(prefill.host || "127.0.0.1")}" required></label>
-      <label class="corto">Puerto<input name="port" type="number" value="${escapar(prefill.port || 3306)}" required min="1" max="65535"></label>
+    <div class="row">
+      <label>${t("webform.host")}<input name="host" value="${escapeHtml(prefill.host || "127.0.0.1")}" required></label>
+      <label class="corto">${t("webform.port")}<input name="port" type="number" value="${escapeHtml(prefill.port || 3306)}" required min="1" max="65535"></label>
     </div>
-    <label>Usuario<input name="user" value="${escapar(prefill.user || "")}" required></label>
-    <label>Contraseña<input name="password" type="password" value="" autocomplete="off"></label>
-    <label>Base de datos <span class="opcional">(opcional)</span>
-      <input name="database" value="${escapar(prefill.database || "")}" placeholder="déjala vacía para ver todas">
+    <label>${t("webform.user")}<input name="user" value="${escapeHtml(prefill.user || "")}" required></label>
+    <label>${t("webform.password")}<input name="password" type="password" value="" autocomplete="off"></label>
+    <label>${t("webform.database")} <span class="opcional">(${t("webform.optional")})</span>
+      <input name="database" value="${escapeHtml(prefill.database || "")}" placeholder="${t("webform.leaveEmpty")}">
     </label>
-    <label class="check"><input name="ssl" type="checkbox" value="1" ${prefill.ssl ? "checked" : ""}> Usar TLS/SSL</label>
-    <button type="submit">Guardar conexión</button>
+    <label class="check"><input name="ssl" type="checkbox" value="1" ${prefill.ssl ? "checked" : ""}> ${t("webform.ssl")}</label>
+    <button type="submit">${t("webform.save")}</button>
   </form>
 </main></body></html>`;
 }
 
-const ESTILOS = `
+const STYLES = `
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin:0; min-height:100vh; display:grid; place-items:center; background:#0f1115;
@@ -112,9 +113,9 @@ label { display:block; font-size:13px; color:#b9c0d0; margin-bottom:12px; }
 input { width:100%; margin-top:5px; padding:9px 11px; background:#0f1115; color:#e6e8ee;
   border:1px solid #2e3442; border-radius:8px; font-size:14px; }
 input:focus { outline:2px solid #3b82f6; outline-offset:-1px; border-color:#3b82f6; }
-.fila { display:flex; gap:12px; }
-.fila label { flex:1; }
-.fila .corto { flex:0 0 110px; }
+.row { display:flex; gap:12px; }
+.row label { flex:1; }
+.row .corto { flex:0 0 110px; }
 .check { display:flex; align-items:center; gap:8px; }
 .check input { width:auto; margin:0; }
 button { width:100%; margin-top:8px; padding:11px; background:#3b82f6; color:#fff; border:0;
@@ -125,34 +126,34 @@ a { color:#60a5fa; }
 `;
 
 /**
- * Levanta el formulario. No bloquea: devuelve { abierto, url } y llama a onDone
- * cuando el usuario guarda, cancela o expira el tiempo.
+ * Starts the form. Non-blocking: returns { open, url } and calls onDone
+ * when the user saves, cancels or the time expires.
  */
-export function abrirFormulario({ prefill = {}, conexiones = [], onDone, timeoutMs = 600000 } = {}) {
+export function openForm({ prefill = {}, connections = [], onDone, timeoutMs = 600000 } = {}) {
   const token = crypto.randomBytes(16).toString("hex");
   let cerrado = false;
-  let servidor = null;
+  let serverInfo = null;
 
-  const terminar = (resultado) => {
+  const finish = (result) => {
     if (cerrado) return;
     cerrado = true;
     clearTimeout(temporizador);
     try {
-      servidor?.close();
+      serverInfo?.close();
     } catch {
       /* ignorado */
     }
-    onDone?.(resultado);
+    onDone?.(result);
   };
 
-  const leerCuerpo = (req) =>
+  const readBody = (req) =>
     new Promise((resolve, reject) => {
-      let cuerpo = "";
+      let body = "";
       req.on("data", (trozo) => {
-        cuerpo += trozo;
-        if (cuerpo.length > 64 * 1024) reject(new Error("cuerpo demasiado grande"));
+        body += trozo;
+        if (body.length > 64 * 1024) reject(new Error(t("webform.bodyTooLarge")));
       });
-      req.on("end", () => resolve(cuerpo));
+      req.on("end", () => resolve(body));
       req.on("error", reject);
     });
 
@@ -161,62 +162,62 @@ export function abrirFormulario({ prefill = {}, conexiones = [], onDone, timeout
     res.end(html);
   };
 
-  servidor = http.createServer(async (req, res) => {
+  serverInfo = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
 
     if (req.method === "GET" && url.pathname === "/") {
       if (url.searchParams.get("token") !== token) {
-        responder(res, 403, `<h1>Enlace no válido</h1>`);
+        responder(res, 403, `<h1>${t("webform.invalidLink")}</h1>`);
         return;
       }
-      responder(res, 200, pagina({ token, conexiones, prefill }));
+      responder(res, 200, renderPage({ token, connections, prefill }));
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/guardar") {
+    if (req.method === "POST" && url.pathname === "/save") {
       try {
-        const cuerpo = await leerCuerpo(req);
-        const datos = new URLSearchParams(cuerpo);
+        const body = await readBody(req);
+        const data = new URLSearchParams(body);
 
-        if (datos.get("token") !== token) {
-          responder(res, 403, pagina({ token, conexiones, prefill, error: "Token inválido. Vuelve a abrir el formulario." }));
+        if (data.get("token") !== token) {
+          responder(res, 403, renderPage({ token, connections, prefill, error: t("webform.invalidToken") }));
           return;
         }
 
-        const nombre = (datos.get("nombre") || "").trim();
-        const problemaNombre = validarNombre(nombre);
-        if (problemaNombre) {
-          responder(res, 400, pagina({ token, conexiones, prefill, error: problemaNombre }));
+        const name = (data.get("name") || "").trim();
+        const nameProblem = validateName(name);
+        if (nameProblem) {
+          responder(res, 400, renderPage({ token, connections, prefill, error: nameProblem }));
           return;
         }
 
-        const puerto = Number(datos.get("port"));
-        if (!Number.isInteger(puerto) || puerto < 1 || puerto > 65535) {
-          responder(res, 400, pagina({ token, conexiones, prefill, error: "El puerto no es válido." }));
+        const port = Number(data.get("port"));
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          responder(res, 400, renderPage({ token, connections, prefill, error: t("webform.badPort") }));
           return;
         }
 
-        const usuario = (datos.get("user") || "").trim();
-        if (!usuario) {
-          responder(res, 400, pagina({ token, conexiones, prefill, error: "El usuario es obligatorio." }));
+        const user = (data.get("user") || "").trim();
+        if (!user) {
+          responder(res, 400, renderPage({ token, connections, prefill, error: t("webform.userRequired") }));
           return;
         }
 
-        const credenciales = {
-          host: (datos.get("host") || "127.0.0.1").trim(),
-          port: puerto,
-          user: usuario,
-          password: datos.get("password") || "",
-          database: (datos.get("database") || "").trim() || undefined,
-          ssl: datos.get("ssl") === "1",
+        const creds = {
+          host: (data.get("host") || "127.0.0.1").trim(),
+          port: port,
+          user: user,
+          password: data.get("password") || "",
+          database: (data.get("database") || "").trim() || undefined,
+          ssl: data.get("ssl") === "1",
         };
 
-        upsertConnection(nombre, credenciales, { activar: true });
-        responder(res, 200, pagina({ guardada: nombre }));
+        upsertConnection(name, creds, { activate: true });
+        responder(res, 200, renderPage({ saved: name }));
 
-        setTimeout(() => terminar({ ok: true, nombre, credentials: credenciales }), 600);
+        setTimeout(() => finish({ ok: true, name, credentials: creds }), 600);
       } catch (error) {
-        responder(res, 500, pagina({ token, conexiones, prefill, error: error.message }));
+        responder(res, 500, renderPage({ token, connections, prefill, error: error.message }));
       }
       return;
     }
@@ -227,18 +228,18 @@ export function abrirFormulario({ prefill = {}, conexiones = [], onDone, timeout
       return;
     }
 
-    responder(res, 404, "<h1>No encontrado</h1>");
+    responder(res, 404, `<h1>${t("webform.notFound")}</h1>`);
   });
 
   const temporizador = setTimeout(
-    () => terminar({ ok: false, expirado: true, error: "El formulario expiró." }),
+    () => finish({ ok: false, expirado: true, error: t("webform.expired") }),
     timeoutMs,
   );
 
   return new Promise((resolve, reject) => {
-    servidor.once("error", reject);
-    servidor.listen(0, "127.0.0.1", () => {
-      const { port } = servidor.address();
+    serverInfo.once("error", reject);
+    serverInfo.listen(0, "127.0.0.1", () => {
+      const { port } = serverInfo.address();
       const url = `http://127.0.0.1:${port}/?token=${token}`;
 
       if (process.env.MCP_MYSQL_FORM_URL_FILE) {
@@ -249,8 +250,8 @@ export function abrirFormulario({ prefill = {}, conexiones = [], onDone, timeout
         }
       }
 
-      const abierto = abrirNavegador(url);
-      resolve({ abierto: true, url, puerto: port, navegador_abierto: abierto, cerrar: () => terminar({ ok: false }) });
+      const open = openBrowser(url);
+      resolve({ open: true, url, port: port, browserOpened: open, close: () => finish({ ok: false }) });
     });
   });
 }

@@ -1,52 +1,57 @@
 #!/usr/bin/env node
 /**
- * Abre el formulario de conexiones sin pasar por OpenCode.
- * Útil cuando el agente no está disponible o tras un reinicio.
+ * Opens the connection form without going through OpenCode.
+ * Useful when the agent is unavailable or after a restart.
  *
  *   npm run form
  */
-import { abrirFormulario } from "./webform.js";
+import { openForm } from "./webform.js";
 import { loadStore, storePath } from "./store.js";
-import { arrancar, esEntrada } from "./cli-util.js";
+import { runCli, isEntryPoint } from "./cli-util.js";
+import { t } from "./i18n.js";
 
-export async function ejecutarFormulario() {
+export async function runForm() {
 const store = loadStore();
-const existentes = Object.keys(store.connections);
+const existingNames = Object.keys(store.connections);
 
 let alGuardar;
-const espera = new Promise((resolve) => {
+const wait = new Promise((resolve) => {
   alGuardar = resolve;
 });
 
-console.log(`Archivo: ${storePath()}`);
-if (existentes.length) console.log(`Guardadas: ${existentes.join(", ")}`);
+console.log(`${t("form.file")}: ${storePath()}`);
+if (existingNames.length) console.log(`${t("form.saved")}: ${existingNames.join(", ")}`);
 console.log("");
 
-const formulario = await abrirFormulario({
-  conexiones: existentes,
-  prefill: { nombre: process.env.MCP_MYSQL_DEFAULT_NAME || store.active || "" },
-  onDone: (resultado) => alGuardar(resultado),
+const form = await openForm({
+  connections: existingNames,
+  prefill: { name: process.env.MCP_MYSQL_DEFAULT_NAME || store.active || "" },
+  onDone: (result) => alGuardar(result),
 });
 
-console.log(`Formulario: ${formulario.url}`);
-if (!formulario.navegador_abierto) {
-  console.log("Abre esa URL en el navegador (no se pudo abrir automáticamente).");
-}
-console.log("Esperando a que guardes… (Ctrl+C para cancelar)");
+console.log(`${t("form.url")}: ${form.url}`);
+if (!form.browserOpened) console.log(t("form.manual"));
+console.log(t("form.waiting"));
 console.log("");
 
-const resultado = await espera;
+const result = await wait;
 
-if (resultado.ok) {
-  const credenciales = resultado.credentials;
-  console.log(`Guardada "${resultado.nombre}": ${credenciales.user}@${credenciales.host}:${credenciales.port}/${credenciales.database || "(sin base)"}`);
+if (result.ok) {
+  const creds = result.credentials;
+  console.log(t("form.savedAs", {
+    name: result.name,
+    user: creds.user,
+    host: creds.host,
+    port: creds.port,
+    base: creds.database || t("common.noDatabase"),
+  }));
   process.exit(0);
 }
 
-console.log("Cerrado sin guardar.");
+console.log(t("form.closed"));
 process.exit(1);
 }
 
-if (esEntrada(import.meta.url)) {
-  arrancar(() => ejecutarFormulario());
+if (isEntryPoint(import.meta.url)) {
+  runCli(() => runForm());
 }

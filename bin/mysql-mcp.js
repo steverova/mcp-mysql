@@ -1,110 +1,89 @@
 #!/usr/bin/env node
 /**
- * CLI global de mcp-mysql.
+ * Global mcp-mysql CLI.
  *
  *   mysql-mcp list
- *   mysql-mcp add ventas
- *   mysql-mcp use ventas
- *   mysql-mcp remove vieja
+ *   mysql-mcp add sales
+ *   mysql-mcp use sales
+ *   mysql-mcp remove old
  *
- * Todo se ejecuta en el mismo proceso (sin `spawn`), para que funcione igual
- * instalado con `npm link` o compilado como binario único.
+ * Everything runs in the same process (no `spawn`), so it works the same when
+ * installed with `npm link` or compiled as a single binary.
  */
 import "../src/compiled-entry.js";
 import paquete from "../package.json" with { type: "json" };
-import { ejecutarWizard } from "../src/wizard.js";
-import { ejecutarDoctor } from "../src/doctor.js";
-import { ejecutarFormulario } from "../src/form.js";
-import { ejecutarOpenCode } from "../src/opencode.js";
+import { runWizard } from "../src/wizard.js";
+import { runDoctor } from "../src/doctor.js";
+import { runForm } from "../src/form.js";
+import { runOpenCode } from "../src/opencode.js";
+import { t } from "../src/i18n.js";
 
 const version = paquete.version;
 
 const color = (codigo, texto) => (process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto);
-const titulo = (texto) => color("1;36", texto);
-const tenue = (texto) => color("90", texto);
+const title = (texto) => color("1;36", texto);
+const dim = (texto) => color("90", texto);
 const mal = (texto) => color("31", texto);
 
-const AYUDA = `
-${titulo("mysql-mcp")} ${tenue("v" + version)} — conexiones MySQL para OpenCode
+const HELP = `
+${title("mysql-mcp")} ${dim("v" + version)} — ${t("bin.tagline")}
 
-${titulo("Uso")}
-  mysql-mcp                     arranca el servidor MCP (stdio, lo usa OpenCode)
-  mysql-mcp status              muestra la BD seleccionada ahora mismo
-  mysql-mcp list                lista todas las conexiones
-  mysql-mcp add [nombre]        crea o edita una conexión (abre el navegador)
-  mysql-mcp add --tui           igual, pero con el asistente de terminal
-  mysql-mcp form                abre el formulario sin más
-  mysql-mcp use [nombre]        activa una conexión (sin nombre: selector)
-  mysql-mcp remove [nombre]     elimina una (sin nombre: selector)
-  mysql-mcp remove --all        elimina todas
-  mysql-mcp doctor [--all]      prueba las conexiones
-  mysql-mcp opencode            registra el MCP en OpenCode (sin editar JSON)
-  mysql-mcp path                dónde se guardan las conexiones
-  mysql-mcp help                esta ayuda
+${title(t("bin.usage"))}
+${t("bin.help")}
 
-${titulo("Ejemplos")}
-  mysql-mcp add ventas
-  mysql-mcp status
-  mysql-mcp use ventas
-  mysql-mcp doctor --all
-  mysql-mcp remove produccion
+${title(t("bin.examplesTitle"))}
+${t("bin.examples")}
 
-${titulo("Atajos")}  ls = list · rm = remove · test = doctor · current = status
+${title(t("bin.aliasesTitle"))}  ls = list · rm = remove · test = doctor · current = status
 `;
 
-const argumentos = process.argv.slice(2);
-const comando = argumentos[0] && !argumentos[0].startsWith("-") ? argumentos[0] : "";
-const resto = comando ? argumentos.slice(1) : argumentos;
+const args = process.argv.slice(2);
+const command = args[0] && !args[0].startsWith("-") ? args[0] : "";
+const remaining = command ? args.slice(1) : args;
 
-const primerNombre = () => resto.find((argumento) => !argumento.startsWith("-"));
+const firstPositional = () => remaining.find((argumento) => !argumento.startsWith("-"));
 
-const faltanArgumentos = (texto) => {
-  console.error(mal(texto));
-  console.error(tenue("Prueba: mysql-mcp help"));
-  process.exit(1);
-};
-
-switch (comando) {
+switch (command) {
   case "":
   case "start":
   case "serve": {
-    const { iniciarServidor } = await import("../src/index.js");
-    await iniciarServidor();
+    const { startServer } = await import("../src/index.js");
+    await startServer();
     break;
   }
 
   case "list":
   case "ls":
-    await ejecutarWizard(["--list"]);
+    await runWizard(["--list"]);
     break;
 
   case "add":
   case "new":
   case "login": {
-    const nombre = primerNombre();
-    if (nombre) process.env.MCP_MYSQL_DEFAULT_NAME = nombre;
-    if (resto.includes("--tui") || resto.includes("--terminal")) {
-      await ejecutarWizard([]);
+    const name = firstPositional();
+    if (name) process.env.MCP_MYSQL_DEFAULT_NAME = name;
+    if (remaining.includes("--tui") || remaining.includes("--terminal")) {
+      await runWizard([]);
     } else {
-      await ejecutarFormulario();
+      await runForm();
     }
     break;
   }
 
   case "status":
   case "current":
-    await ejecutarWizard(["--status"]);
+    await runWizard(["--status"]);
     break;
 
   case "form":
   case "ui":
-    await ejecutarFormulario();
+    await runForm();
     break;
 
   case "use":
   case "switch": {
-    const nombre = primerNombre();
-    await ejecutarWizard(nombre ? ["--use", nombre] : ["--select"]);
+    const name = firstPositional();
+    await runWizard(name ? ["--use", name] : ["--select"]);
     break;
   }
 
@@ -112,31 +91,31 @@ switch (comando) {
   case "rm":
   case "delete":
   case "logout": {
-    if (resto.includes("--all") || resto.includes("-a")) {
-      await ejecutarWizard(["--delete", "--all"]);
+    if (remaining.includes("--all") || remaining.includes("-a")) {
+      await runWizard(["--delete", "--all"]);
       break;
     }
-    const nombre = primerNombre();
-    await ejecutarWizard(nombre ? ["--delete", nombre] : ["--remove-pick"]);
+    const name = firstPositional();
+    await runWizard(name ? ["--delete", name] : ["--remove-pick"]);
     break;
   }
 
   case "doctor":
   case "test":
   case "check":
-    await ejecutarDoctor(resto);
+    await runDoctor(remaining);
     break;
 
   case "opencode":
   case "install":
   case "register":
-    await ejecutarOpenCode(resto);
+    await runOpenCode(remaining);
     break;
 
   case "path": {
     const { storePath, hasStoredConnections } = await import("../src/store.js");
     console.log(storePath());
-    if (!hasStoredConnections()) console.log(tenue("(todavía no existe: crea una con `mysql-mcp add`)"));
+    if (!hasStoredConnections()) console.log(dim(t("bin.pathMissing")));
     break;
   }
 
@@ -149,11 +128,11 @@ switch (comando) {
   case "help":
   case "--help":
   case "-h":
-    console.log(AYUDA);
+    console.log(HELP);
     break;
 
   default:
-    console.error(mal(`Comando desconocido: ${comando}`));
-    console.log(AYUDA);
+    console.error(mal(t("bin.unknown", { command })));
+    console.log(HELP);
     process.exit(1);
 }

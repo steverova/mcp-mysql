@@ -3,7 +3,9 @@
 Servidor MCP para MySQL con varias conexiones, lectura libre y escritura confirmada.
 Esta guía es práctica: qué escribir y qué esperar en cada momento.
 
-> Referencia técnica completa (arquitectura, variables, seguridad): [`README.md`](README.md).
+> Referencia técnica completa: [`README.md`](README.md) (en inglés).
+> La interfaz de la aplicación sigue el **idioma del sistema** (español o inglés).
+> Para forzarlo: `MCP_MYSQL_LANG=es` o `MCP_MYSQL_LANG=en`.
 
 ---
 

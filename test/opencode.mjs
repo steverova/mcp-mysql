@@ -14,19 +14,19 @@ const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BIN = path.join(RAIZ, "bin", "mysql-mcp.js");
 const CONFIG = path.join(os.tmpdir(), "mcp-mysql-test", "opencode.json");
 
-let fallos = 0;
-const check = (nombre, condicion, detalle = "") => {
-  console.log(`${condicion ? "OK   " : "FALLO"} ${nombre}${detalle ? " -> " + detalle : ""}`);
-  if (!condicion) fallos++;
+let failures = 0;
+const check = (name, condicion, detalle = "") => {
+  console.log(`${condicion ? "OK   " : "FALLO"} ${name}${detalle ? " -> " + detalle : ""}`);
+  if (!condicion) failures++;
 };
 
-const ejecutar = () =>
+const run = () =>
   spawnSync(process.execPath, [BIN, "opencode"], {
     encoding: "utf8",
-    env: { ...process.env, MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
+    env: { ...process.env, MCP_MYSQL_LANG: "es", MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
   });
 
-// Configuración previa con otras cosas que NO se deben perder.
+// Configuración previa con others cosas que NO se deben perder.
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(
   CONFIG,
@@ -43,40 +43,40 @@ fs.writeFileSync(
   ),
 );
 
-const primera = ejecutar();
-check("la primera ejecución termina bien", primera.status === 0, (primera.stderr || "").slice(0, 60));
+const firstRun = run();
+check("la firstRun ejecución termina bien", firstRun.status === 0, (firstRun.stderr || "").slice(0, 60));
 
 const config = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
 check("añade mcp.mysql", config.mcp?.mysql?.type === "local");
 check("comando correcto", JSON.stringify(config.mcp.mysql.command) === JSON.stringify(["node", path.join(RAIZ, "src", "index.js").replace(/\\/g, "/")]), JSON.stringify(config.mcp.mysql.command));
-check("activa el servidor", config.mcp.mysql.enabled === true);
+check("active el serverInfo", config.mcp.mysql.enabled === true);
 check("conserva aws-mcp", Boolean(config.mcp["aws-mcp"]));
 check("conserva plugins", Array.isArray(config.plugins) && config.plugins.length === 1);
 check("conserva permisos previos", config.permission.shell?.["git *"] === "allow");
 check("añade permiso confirm_write", config.permission.mysql_confirm_write === "ask");
 check("añade permiso reset_credentials", config.permission.mysql_reset_credentials === "ask");
 
-const copias = fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-"));
-check("deja copia de seguridad", copias.length >= 1, copias[0] || "");
+const backupFiles = fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-"));
+check("deja backupPath de seguridad", backupFiles.length >= 1, backupFiles[0] || "");
 
-const segunda = ejecutar();
-check("la segunda ejecución es idempotente", segunda.status === 0 && segunda.stdout.includes("Ya estaba registrado"), segunda.stdout.trim().split("\n").pop());
-check("no duplica la copia", fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-")).length === copias.length);
+const secondRun = run();
+check("la secondRun ejecución es idempotente", secondRun.status === 0 && secondRun.stdout.includes("Ya estaba registrado"), secondRun.stdout.trim().split("\n").pop());
+check("no duplica la backupPath", fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-")).length === backupFiles.length);
 
 // ---dry-run no debe escribir.
 fs.rmSync(CONFIG, { force: true });
 const dry = spawnSync(process.execPath, [BIN, "opencode", "--dry-run"], {
   encoding: "utf8",
-  env: { ...process.env, MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
+  env: { ...process.env, MCP_MYSQL_LANG: "es", MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
 });
-check("--dry-run informa cambios", dry.status === 0 && dry.stdout.includes("Cambios que aplicaría"));
-check("--dry-run no crea el archivo", !fs.existsSync(CONFIG));
+check("--dry-run informa changes", dry.status === 0 && dry.stdout.includes("Cambios que aplicaría"));
+check("--dry-run no crea el file", !fs.existsSync(CONFIG));
 
 fs.rmSync(CONFIG, { force: true });
 
 console.log("");
-if (fallos) {
-  console.error(`${fallos} prueba(s) fallidas`);
+if (failures) {
+  console.error(`${failures} prueba(s) fallidas`);
   process.exit(1);
 }
 console.log("Todas las pruebas pasaron");

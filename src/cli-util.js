@@ -2,23 +2,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * ¿Este módulo se está ejecutando directamente (node src/x.js)?
- * En un binario compilado devuelve false: los comandos se invocan desde el CLI.
+ * Is this module being run directly (node src/x.js)?
+ * In a compiled binary it returns false: commands are invoked from the CLI.
  */
-export function esEntrada(urlModulo) {
+export function isEntryPoint(urlModulo) {
   if (process.env.MCP_MYSQL_ENTRY === "bin") return false;
 
-  const entrada = process.argv[1];
-  if (!entrada) return false;
+  const input = process.argv[1];
+  if (!input) return false;
   try {
-    return path.resolve(entrada) === fileURLToPath(urlModulo);
+    return path.resolve(input) === fileURLToPath(urlModulo);
   } catch {
     return false;
   }
 }
 
-/** Ejecuta una tarea de CLI y traduce el error a código de salida. */
-export async function arrancar(tarea) {
+// Runs a CLI task and turns errors into an exit code.
+export async function runCli(tarea) {
   try {
     await tarea();
   } catch (error) {

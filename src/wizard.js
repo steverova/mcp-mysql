@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Asistente de terminal (TUI) para gestionar conexiones MySQL.
- * Multiplataforma: Windows, macOS y Linux. Solo necesita un terminal.
+ * Terminal wizard (TUI) to manage MySQL connections.
+ * Cross-platform: Windows, macOS and Linux. Only needs a terminal.
  *
- *   npm run login                 crear o editar una conexión
- *   npm run login -- --list       listar conexiones
- *   npm run login -- --use nombre activar una conexión
- *   npm run logout                borrar todas
- *   npm run logout -- nombre      borrar una
+ *   npm run login                 create or edit a connection
+ *   npm run login -- --list       list connections
+ *   npm run login -- --use name   activate a connection
+ *   npm run logout                delete all
+ *   npm run logout -- name        delete one
  */
 import readline from "node:readline/promises";
 import mysql from "mysql2/promise";
@@ -18,153 +18,153 @@ import {
   setActiveConnection,
   storePath,
   upsertConnection,
-  validarNombre,
+  validateName,
 } from "./store.js";
-import { arrancar, esEntrada } from "./cli-util.js";
+import { runCli, isEntryPoint } from "./cli-util.js";
+import { t } from "./i18n.js";
 
-export async function ejecutarWizard(argumentos = process.argv.slice(2)) {
+export async function runWizard(args = process.argv.slice(2)) {
 const color = (codigo, texto) =>
   process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto;
-const titulo = (texto) => color("1;36", texto);
+const title = (texto) => color("1;36", texto);
 const ok = (texto) => color("32", texto);
-const aviso = (texto) => color("33", texto);
+const warning = (texto) => color("33", texto);
 const error = (texto) => color("31", texto);
-const tenue = (texto) => color("90", texto);
+const dim = (texto) => color("90", texto);
 
-const bandera = (nombre) => argumentos.includes(nombre);
-const valorDe = (nombre) => {
-  const indice = argumentos.indexOf(nombre);
-  return indice >= 0 ? argumentos[indice + 1] : undefined;
+const hasFlag = (name) => args.includes(name);
+const valueOf = (name) => {
+  const indice = args.indexOf(name);
+  return indice >= 0 ? args[indice + 1] : undefined;
 };
 
 const store = loadStore();
-const nombres = Object.keys(store.connections);
+const names = Object.keys(store.connections);
+const available = () => names.join(", ") || t("common.none");
+const noDatabase = () => t("common.noDatabase");
 
 /** ------------------------------------------------------------------ */
-/** Comandos no interactivos                                          */
+// Non-interactive commands
 /** ------------------------------------------------------------------ */
 
-if (bandera("--status")) {
-  if (!nombres.length) {
-    console.log(tenue("Sin conexiones todavía.") + "  Crea una con: " + titulo("mysql-mcp add"));
+if (hasFlag("--status")) {
+  if (!names.length) {
+    console.log(dim(t("wizard.list.empty", { file: storePath() })) + "  " + t("wizard.createWith") + " " + title("mysql-mcp add"));
     process.exit(0);
   }
-  const activa = store.connections[store.active] || store.connections[nombres[0]];
-  const base = activa.database || tenue("(sin base por defecto: se ven todas)");
-  console.log(titulo("BD actual:"));
-  console.log(`  conexión : ${store.active || nombres[0]}`);
-  console.log(`  servidor : ${activa.user}@${activa.host}:${activa.port}`);
-  console.log(`  base     : ${base}`);
-  console.log(`  TLS      : ${activa.ssl ? "sí" : "no"}`);
-  console.log(tenue(`  archivo  : ${storePath()}`));
-  const otras = nombres.filter((n) => n !== store.active);
-  if (otras.length) console.log(tenue(`  otras    : ${otras.join(", ")}  → mysql-mcp use <nombre>`));
+  const active = store.connections[store.active] || store.connections[names[0]];
+  const base = active.database || dim(t("wizard.status.noDefaultDb"));
+  console.log(title(t("wizard.status.title")));
+  console.log(`  ${t("wizard.status.connection")} : ${store.active || names[0]}`);
+  console.log(`  ${t("wizard.status.server")}     : ${active.user}@${active.host}:${active.port}`);
+  console.log(`  ${t("wizard.status.database")}   : ${base}`);
+  console.log(`  TLS          : ${active.ssl ? t("common.yes") : t("common.no")}`);
+  console.log(dim(`  ${t("wizard.status.file")}      : ${storePath()}`));
+  const others = names.filter((n) => n !== store.active);
+  if (others.length) console.log(dim(`  ${t("wizard.status.others")}     : ${others.join(", ")}  → mysql-mcp use <name>`));
   process.exit(0);
 }
 
-if (bandera("--list")) {
-  if (!nombres.length) {
-    console.log(tenue(`No hay conexiones guardadas (${storePath()}).`));
+if (hasFlag("--list")) {
+  if (!names.length) {
+    console.log(dim(t("wizard.list.empty", { file: storePath() })));
     process.exit(0);
   }
-  console.log(titulo("Conexiones guardadas:"), tenue(storePath()));
-  for (const nombre of nombres) {
-    const c = store.connections[nombre];
-    const marca = nombre === store.active ? ok("* ") : "  ";
-    console.log(`${marca}${nombre.padEnd(18)} ${c.user}@${c.host}:${c.port}/${c.database || "(sin base)"}${c.ssl ? " [TLS]" : ""}`);
+  console.log(title(t("wizard.list.title")), dim(storePath()));
+  for (const name of names) {
+    const c = store.connections[name];
+    const marker = name === store.active ? ok("* ") : "  ";
+    console.log(`${marker}${name.padEnd(18)} ${c.user}@${c.host}:${c.port}/${c.database || noDatabase()}${c.ssl ? " [TLS]" : ""}`);
   }
   process.exit(0);
 }
 
-if (bandera("--use")) {
-  const nombre = valorDe("--use");
-  if (!nombre || !store.connections[nombre]) {
-    console.error(error(`No existe la conexión "${nombre || ""}". Disponibles: ${nombres.join(", ") || "(ninguna)"}.`));
+if (hasFlag("--use")) {
+  const name = valueOf("--use");
+  if (!name || !store.connections[name]) {
+    console.error(error(t("wizard.use.notFound", { name: name || "", available: available() })));
     process.exit(1);
   }
-  setActiveConnection(nombre);
-  console.log(ok(`Conexión activa: ${nombre}`));
+  setActiveConnection(name);
+  console.log(ok(t("wizard.use.active", { name })));
   process.exit(0);
 }
 
-if (bandera("--delete") || argumentos[0] === "delete") {
-  const nombre = valorDe("--delete") || argumentos.find((a) => !a.startsWith("-") && a !== "delete");
+if (hasFlag("--delete") || args[0] === "delete") {
+  const name = valueOf("--delete") || args.find((a) => !a.startsWith("-") && a !== "delete");
 
-  if (bandera("--all") || bandera("-a")) {
+  if (hasFlag("--all") || hasFlag("-a")) {
     const borrado = deleteStore();
-    console.log(borrado ? ok("Todas las conexiones borradas.") : tenue("No había conexiones guardadas."));
+    console.log(borrado ? ok(t("wizard.delete.allDone")) : dim(t("wizard.delete.noneSaved")));
     process.exit(0);
   }
 
-  if (!nombre) {
-    console.error(error("Indica qué conexión borrar, o usa --all para borrar todas."));
-    console.error(tenue("  mysql-mcp remove ventas"));
-    console.error(tenue("  mysql-mcp remove --all"));
+  if (!name) {
+    console.error(error(t("wizard.delete.which")));
+    console.error(dim("  mysql-mcp remove ventas"));
+    console.error(dim("  mysql-mcp remove --all"));
     process.exit(1);
   }
 
-  const resultado = removeConnection(nombre);
-  console.log(resultado.borrada ? ok(`Conexión "${nombre}" borrada.`) : aviso(`No existía "${nombre}".`));
-  process.exit(resultado.borrada ? 0 : 1);
+  const result = removeConnection(name);
+  console.log(result.deleted ? ok(t("wizard.delete.done", { name })) : warning(t("wizard.delete.missing", { name })));
+  process.exit(result.deleted ? 0 : 1);
 }
 
 /** ------------------------------------------------------------------ */
-/** Asistente interactivo                                             */
+// Interactive wizard
 /** ------------------------------------------------------------------ */
 
 if (!process.stdin.isTTY) {
-  console.error(
-    error("No hay terminal interactiva.") +
-      "\nUsa el formulario web (herramienta save_connection desde OpenCode) o define MYSQL_USER/MYSQL_PASSWORD.",
-  );
+  console.error(error(t("wizard.noTty")) + "\n" + t("wizard.noTtyHint"));
   process.exit(1);
 }
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-async function preguntar(texto, porDefecto = "") {
-  const sufijo = porDefecto !== "" ? tenue(` [${porDefecto}]`) : "";
-  const respuesta = (await rl.question(`${texto}${sufijo}: `)).trim();
-  return respuesta || porDefecto;
+async function ask(texto, porDefecto = "") {
+  const suffix = porDefecto !== "" ? dim(` [${porDefecto}]`) : "";
+  const answer = (await rl.question(`${texto}${suffix}: `)).trim();
+  return answer || porDefecto;
 }
 
-async function preguntarSecreto(texto) {
+async function askSecret(texto) {
   rl.pause();
   process.stdout.write(`${texto}: `);
 
   return new Promise((resolve) => {
     const stdin = process.stdin;
-    let valor = "";
+    let value = "";
 
-    const limpiar = () => {
-      stdin.removeListener("data", alEscribir);
+    const cleanup = () => {
+      stdin.removeListener("data", onKey);
       if (stdin.isTTY) stdin.setRawMode(false);
       stdin.pause();
       rl.resume();
     };
 
-    const alEscribir = (buffer) => {
+    const onKey = (buffer) => {
       for (const caracter of buffer.toString("utf8")) {
         if (caracter === "\r" || caracter === "\n") {
-          limpiar();
+          cleanup();
           process.stdout.write("\n");
-          resolve(valor);
+          resolve(value);
           return;
         }
         if (caracter === "\u0003") {
-          limpiar();
+          cleanup();
           process.stdout.write("\n");
           process.exit(130);
         }
         if (caracter === "\u007f" || caracter === "\b") {
-          if (valor) {
-            valor = valor.slice(0, -1);
+          if (value) {
+            value = value.slice(0, -1);
             process.stdout.write("\b \b");
           }
           continue;
         }
         if (caracter >= " ") {
-          valor += caracter;
+          value += caracter;
           process.stdout.write("*");
         }
       }
@@ -172,172 +172,178 @@ async function preguntarSecreto(texto) {
 
     stdin.setRawMode(true);
     stdin.resume();
-    stdin.on("data", alEscribir);
+    stdin.on("data", onKey);
   });
 }
 
-async function preguntarSi(texto, porDefecto = true) {
-  const respuesta = (await preguntar(`${texto} (s/n)`, porDefecto ? "s" : "n")).toLowerCase();
-  return respuesta.startsWith("s") || respuesta.startsWith("y");
+async function askYesNo(texto, porDefecto = true) {
+  const si = t("common.yes").charAt(0);
+  const no = t("common.no").charAt(0);
+  const answer = (await ask(texto, porDefecto ? si : no)).toLowerCase();
+  return answer.startsWith(si) || answer.startsWith("y") || answer.startsWith("s");
 }
 
-async function elegir(mensaje, accion) {
-  if (!nombres.length) {
-    console.log(tenue("No hay conexiones guardadas.") + "  Crea una con: " + titulo("mysql-mcp add"));
+async function elegir(message, action) {
+  if (!names.length) {
+    console.log(dim(t("wizard.list.empty", { file: storePath() })) + "  " + t("wizard.createWith") + " " + title("mysql-mcp add"));
     rl.close();
     process.exit(0);
   }
 
   console.log("");
-  console.log(titulo("Conexiones:"));
-  nombres.forEach((nombre, indice) => {
-    const c = store.connections[nombre];
-    const marca = nombre === store.active ? ok("*") : " ";
+  console.log(title(t("wizard.pick.title")));
+  names.forEach((name, indice) => {
+    const c = store.connections[name];
+    const marker = name === store.active ? ok("*") : " ";
     console.log(
-      `  ${marca} ${String(indice + 1).padStart(2)}. ${nombre.padEnd(18)} ${tenue(
-        `${c.user}@${c.host}:${c.port}/${c.database || "(sin base)"}`,
+      `  ${marker} ${String(indice + 1).padStart(2)}. ${name.padEnd(18)} ${dim(
+        `${c.user}@${c.host}:${c.port}/${c.database || noDatabase()}`,
       )}`,
     );
   });
   console.log("");
 
-  const entrada = (await preguntar(mensaje)).trim();
-  if (!entrada) {
+  const input = (await ask(message)).trim();
+  if (!input) {
     rl.close();
     process.exit(0);
   }
 
-  const numero = Number(entrada);
-  const elegido =
-    Number.isInteger(numero) && numero >= 1 && numero <= nombres.length ? nombres[numero - 1] : entrada;
+  const number = Number(input);
+  const chosen =
+    Number.isInteger(number) && number >= 1 && number <= names.length ? names[number - 1] : input;
 
-  if (!store.connections[elegido]) {
-    console.error(error(`No existe la conexión "${elegido}".`));
+  if (!store.connections[chosen]) {
+    console.error(error(t("wizard.use.notFound", { name: chosen, available: available() })));
     rl.close();
     process.exit(1);
   }
 
-  await accion(elegido);
+  await action(chosen);
   rl.close();
   process.exit(0);
 }
 
-if (bandera("--select")) {
-  await elegir("Número o nombre a activar", async (nombre) => {
-    setActiveConnection(nombre);
-    const c = loadStore().connections[nombre];
+if (hasFlag("--select")) {
+  await elegir(t("wizard.pick.activate"), async (name) => {
+    setActiveConnection(name);
+    const c = loadStore().connections[name];
     console.log("");
-    console.log(ok(`BD actual: ${nombre}`));
-    console.log(`  ${c.user}@${c.host}:${c.port}/${c.database || "(sin base)"}`);
-    console.log(tenue("OpenCode lo reconocerá y te pedirá confirmación al empezar a consultar."));
+    console.log(ok(t("wizard.status.title") + " " + name));
+    console.log(`  ${c.user}@${c.host}:${c.port}/${c.database || noDatabase()}`);
+    console.log(dim(t("wizard.pick.confirmHint")));
   });
 }
 
-if (bandera("--remove-pick")) {
-  await elegir("Número o nombre a borrar", async (nombre) => {
-    removeConnection(nombre);
+if (hasFlag("--remove-pick")) {
+  await elegir(t("wizard.pick.delete"), async (name) => {
+    removeConnection(name);
     console.log("");
-    console.log(ok(`Conexión "${nombre}" borrada.`));
-    const resto = Object.keys(loadStore().connections);
-    console.log(tenue(resto.length ? `Quedan: ${resto.join(", ")}` : "No queda ninguna conexión."));
+    console.log(ok(t("wizard.delete.done", { name })));
+    const remaining = Object.keys(loadStore().connections);
+    console.log(dim(remaining.length ? t("wizard.pick.remaining", { available: remaining.join(", ") }) : t("wizard.pick.noLeft")));
   });
 }
 
 console.log("");
-console.log(titulo("  Conexiones MySQL") + tenue("  ·  asistente de terminal"));
-console.log(tenue(`  archivo: ${storePath()}`));
+console.log(title("  " + t("wizard.banner.title")) + dim("  ·  " + t("wizard.banner.sub")));
+console.log(dim(`  ${t("wizard.banner.file")}: ${storePath()}`));
 console.log("");
 
-if (nombres.length) {
-  console.log("Guardadas:");
-  for (const nombre of nombres) {
-    const c = store.connections[nombre];
-    console.log(`  ${nombre === store.active ? ok("*") : " "} ${nombre.padEnd(18)} ${tenue(`${c.user}@${c.host}:${c.port}/${c.database || "(sin base)"}`)}`);
+if (names.length) {
+  console.log(t("wizard.savedTitle"));
+  for (const name of names) {
+    const c = store.connections[name];
+    console.log(`  ${name === store.active ? ok("*") : " "} ${name.padEnd(18)} ${dim(`${c.user}@${c.host}:${c.port}/${c.database || noDatabase()}`)}`);
   }
   console.log("");
 }
 
-const actual = store.active && store.connections[store.active] ? store.connections[store.active] : null;
+const current = store.active && store.connections[store.active] ? store.connections[store.active] : null;
 
-const nombre = await preguntar(
-  "Nombre de la conexión",
-  process.env.MCP_MYSQL_DEFAULT_NAME || store.active || nombres[0] || "local",
+const name = await ask(
+  t("wizard.field.name"),
+  process.env.MCP_MYSQL_DEFAULT_NAME || store.active || names[0] || "local",
 );
-const problema = validarNombre(nombre);
-if (problema) {
-  console.error(error(problema));
+const problem = validateName(name);
+if (problem) {
+  console.error(error(problem));
   rl.close();
   process.exit(1);
 }
 
-const existente = store.connections[nombre] || actual || {};
-const host = await preguntar("Host", existente.host || "127.0.0.1");
-const puertoTexto = await preguntar("Puerto", String(existente.port || 3306));
-const puerto = Number(puertoTexto);
-if (!Number.isInteger(puerto) || puerto < 1 || puerto > 65535) {
-  console.error(error("Puerto no válido."));
+const existing = store.connections[name] || current || {};
+const host = await ask(t("wizard.field.host"), existing.host || "127.0.0.1");
+const portText = await ask(t("wizard.field.port"), String(existing.port || 3306));
+const port = Number(portText);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  console.error(error(t("wizard.invalidPort")));
   rl.close();
   process.exit(1);
 }
 
-const usuario = await preguntar("Usuario", existente.user || "");
-if (!usuario) {
-  console.error(error("El usuario es obligatorio."));
+const user = await ask(t("wizard.field.user"), existing.user || "");
+if (!user) {
+  console.error(error(t("wizard.userRequired")));
   rl.close();
   process.exit(1);
 }
 
-const contrasena = await preguntarSecreto("Contraseña (no se muestra)");
-const baseDatos = await preguntar("Base de datos (opcional)", existente.database || "");
-const ssl = await preguntarSi("¿Usar TLS/SSL?", Boolean(existente.ssl));
+const password = await askSecret(t("wizard.field.password"));
+const database = await ask(t("wizard.field.database"), existing.database || "");
+const ssl = await askYesNo(t("wizard.field.ssl"), Boolean(existing.ssl));
 
-const credenciales = {
+const creds = {
   host,
-  port: puerto,
-  user: usuario,
-  password: contrasena,
-  database: baseDatos || undefined,
+  port: port,
+  user: user,
+  password: password,
+  database: database || undefined,
   ssl,
 };
 
 console.log("");
-if (await preguntarSi("¿Probar la conexión ahora?", true)) {
+if (await askYesNo(t("wizard.testNow"), true)) {
   try {
-    const conexion = await mysql.createConnection({
+    const connection = await mysql.createConnection({
       host,
-      port: puerto,
-      user: usuario,
-      password: contrasena,
-      database: baseDatos || undefined,
+      port: port,
+      user: user,
+      password: password,
+      database: database || undefined,
       ssl: ssl ? { rejectUnauthorized: false } : undefined,
       connectTimeout: 10000,
       multipleStatements: false,
     });
-    const [[info]] = await conexion.query(
-      "SELECT VERSION() AS version, DATABASE() AS base, CURRENT_USER() AS usuario",
+    const [[info]] = await connection.query(
+      "SELECT VERSION() AS version, DATABASE() AS base, CURRENT_USER() AS user",
     );
-    await conexion.end();
-    console.log(ok(`  Conecta correctamente: MySQL ${info.version}, usuario ${info.usuario}, base ${info.base || "(ninguna)"}`));
+    await connection.end();
+    console.log(ok("  " + t("wizard.connected", {
+      version: info.version,
+      user: info.user,
+      base: info.base || t("common.none"),
+    })));
   } catch (excepcion) {
-    console.log(error(`  No conecta: ${excepcion.code || ""} ${excepcion.sqlMessage || excepcion.message}`));
-    if (!(await preguntarSi("¿Guardar de todas formas?", false))) {
+    console.log(error("  " + t("wizard.cannotConnect", { error: `${excepcion.code || ""} ${excepcion.sqlMessage || excepcion.message}` })));
+    if (!(await askYesNo(t("wizard.saveAnyway"), false))) {
       rl.close();
       process.exit(1);
     }
   }
 }
 
-upsertConnection(nombre, credenciales, { activar: true });
-setActiveConnection(nombre);
+upsertConnection(name, creds, { activate: true });
+setActiveConnection(name);
 
 console.log("");
-console.log(ok(`Conexión "${nombre}" guardada y activa.`));
-console.log(tenue(`  ${usuario}@${host}:${puerto}/${baseDatos || "(sin base)"}${ssl ? " [TLS]" : ""}`));
-console.log(tenue("  Reinicia OpenCode o usa use_connection para aplicarla en la sesión actual."));
+console.log(ok(t("wizard.saved", { name })));
+console.log(dim(`  ${user}@${host}:${port}/${database || noDatabase()}${ssl ? " [TLS]" : ""}`));
+console.log(dim("  " + t("wizard.applyHint")));
 
 rl.close();
 }
 
-if (esEntrada(import.meta.url)) {
-  arrancar(() => ejecutarWizard());
+if (isEntryPoint(import.meta.url)) {
+  runCli(() => runWizard());
 }
