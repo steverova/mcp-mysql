@@ -20,7 +20,9 @@ import {
   upsertConnection,
   validarNombre,
 } from "./store.js";
+import { arrancar, esEntrada } from "./cli-util.js";
 
+export async function ejecutarWizard(argumentos = process.argv.slice(2)) {
 const color = (codigo, texto) =>
   process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto;
 const titulo = (texto) => color("1;36", texto);
@@ -29,7 +31,6 @@ const aviso = (texto) => color("33", texto);
 const error = (texto) => color("31", texto);
 const tenue = (texto) => color("90", texto);
 
-const argumentos = process.argv.slice(2);
 const bandera = (nombre) => argumentos.includes(nombre);
 const valorDe = (nombre) => {
   const indice = argumentos.indexOf(nombre);
@@ -335,3 +336,8 @@ console.log(tenue(`  ${usuario}@${host}:${puerto}/${baseDatos || "(sin base)"}${
 console.log(tenue("  Reinicia OpenCode o usa use_connection para aplicarla en la sesión actual."));
 
 rl.close();
+}
+
+if (esEntrada(import.meta.url)) {
+  arrancar(() => ejecutarWizard());
+}

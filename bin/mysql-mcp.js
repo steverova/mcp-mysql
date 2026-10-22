@@ -7,17 +7,16 @@
  *   mysql-mcp use ventas
  *   mysql-mcp remove vieja
  *
- * Los subcomandos interactivos se delegan a los módulos de src/ con stdio
- * heredado, para que la TUI y el enmascarado de contraseña funcionen igual
- * en Windows, macOS y Linux.
+ * Todo se ejecuta en el mismo proceso (sin `spawn`), para que funcione igual
+ * instalado con `npm link` o compilado como binario único.
  */
-import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import "../src/compiled-entry.js";
+import paquete from "../package.json" with { type: "json" };
+import { ejecutarWizard } from "../src/wizard.js";
+import { ejecutarDoctor } from "../src/doctor.js";
+import { ejecutarFormulario } from "../src/form.js";
 
-const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const version = JSON.parse(fs.readFileSync(path.join(RAIZ, "package.json"), "utf8")).version;
+const version = paquete.version;
 
 const color = (codigo, texto) => (process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto);
 const titulo = (texto) => color("1;36", texto);
@@ -52,20 +51,10 @@ ${titulo("Atajos")}  ls = list · rm = remove · test = doctor · current = stat
 `;
 
 const argumentos = process.argv.slice(2);
-let comando = argumentos[0] && !argumentos[0].startsWith("-") ? argumentos[0] : "";
+const comando = argumentos[0] && !argumentos[0].startsWith("-") ? argumentos[0] : "";
 const resto = comando ? argumentos.slice(1) : argumentos;
 
-const ejecutar = (modulo, extras = [], entorno = {}) => {
-  const resultado = spawnSync(process.execPath, [path.join(RAIZ, "src", modulo), ...extras], {
-    stdio: "inherit",
-    env: { ...process.env, ...entorno },
-  });
-  if (resultado.error) {
-    console.error(mal(`No se pudo ejecutar ${modulo}: ${resultado.error.message}`));
-    process.exit(1);
-  }
-  process.exit(resultado.status ?? 1);
-};
+const primerNombre = () => resto.find((argumento) => !argumento.startsWith("-"));
 
 const faltanArgumentos = (texto) => {
   console.error(mal(texto));
@@ -76,41 +65,44 @@ const faltanArgumentos = (texto) => {
 switch (comando) {
   case "":
   case "start":
-  case "serve":
-    ejecutar("index.js");
+  case "serve": {
+    const { iniciarServidor } = await import("../src/index.js");
+    await iniciarServidor();
     break;
+  }
 
   case "list":
   case "ls":
-    ejecutar("wizard.js", ["--list"]);
+    await ejecutarWizard(["--list"]);
     break;
 
   case "add":
   case "new":
   case "login": {
-    const nombre = resto.find((argumento) => !argumento.startsWith("-"));
-    const entorno = nombre ? { MCP_MYSQL_DEFAULT_NAME: nombre } : {};
+    const nombre = primerNombre();
+    if (nombre) process.env.MCP_MYSQL_DEFAULT_NAME = nombre;
     if (resto.includes("--tui") || resto.includes("--terminal")) {
-      ejecutar("wizard.js", [], entorno);
+      await ejecutarWizard([]);
+    } else {
+      await ejecutarFormulario();
     }
-    ejecutar("form.js", [], entorno);
     break;
   }
 
   case "status":
   case "current":
-    ejecutar("wizard.js", ["--status"]);
+    await ejecutarWizard(["--status"]);
     break;
 
   case "form":
   case "ui":
-    ejecutar("form.js");
+    await ejecutarFormulario();
     break;
 
   case "use":
   case "switch": {
-    const nombre = resto.find((argumento) => !argumento.startsWith("-"));
-    ejecutar("wizard.js", nombre ? ["--use", nombre] : ["--select"]);
+    const nombre = primerNombre();
+    await ejecutarWizard(nombre ? ["--use", nombre] : ["--select"]);
     break;
   }
 
@@ -119,18 +111,18 @@ switch (comando) {
   case "delete":
   case "logout": {
     if (resto.includes("--all") || resto.includes("-a")) {
-      ejecutar("wizard.js", ["--delete", "--all"]);
+      await ejecutarWizard(["--delete", "--all"]);
       break;
     }
-    const nombre = resto.find((argumento) => !argumento.startsWith("-"));
-    ejecutar("wizard.js", nombre ? ["--delete", nombre] : ["--remove-pick"]);
+    const nombre = primerNombre();
+    await ejecutarWizard(nombre ? ["--delete", nombre] : ["--remove-pick"]);
     break;
   }
 
   case "doctor":
   case "test":
   case "check":
-    ejecutar("doctor.js", resto);
+    await ejecutarDoctor(resto);
     break;
 
   case "path": {

@@ -7,7 +7,9 @@
  */
 import { abrirFormulario } from "./webform.js";
 import { loadStore, storePath } from "./store.js";
+import { arrancar, esEntrada } from "./cli-util.js";
 
+export async function ejecutarFormulario() {
 const store = loadStore();
 const existentes = Object.keys(store.connections);
 
@@ -43,3 +45,8 @@ if (resultado.ok) {
 
 console.log("Cerrado sin guardar.");
 process.exit(1);
+}
+
+if (esEntrada(import.meta.url)) {
+  arrancar(() => ejecutarFormulario());
+}

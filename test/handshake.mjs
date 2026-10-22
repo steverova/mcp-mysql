@@ -42,6 +42,7 @@ const check = (nombre, condicion, detalle = "") => {
 const { tools } = await cliente.listTools();
 const nombres = tools.map((t) => t.name).sort();
 const esperadas = [
+  "confirm_connection",
   "confirm_write",
   "connection_info",
   "describe_table",

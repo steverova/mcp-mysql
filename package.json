@@ -1,6 +1,6 @@
 {
   "name": "mcp-mysql",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Servidor MCP para MySQL multi-conexión, multiplataforma, con escritura en dos pasos",
   "type": "module",
@@ -16,10 +16,13 @@
     "use": "node src/wizard.js --use",
     "form": "node src/form.js",
     "doctor": "node src/doctor.js",
+    "build": "node scripts/build.mjs",
+    "build:all": "node scripts/build.mjs --all",
     "test": "node test/handshake.mjs",
     "test:store": "node test/store.mjs",
     "test:form": "node test/webform.mjs",
-    "test:all": "node test/handshake.mjs && node test/store.mjs && node test/webform.mjs"
+    "test:reload": "node test/reload.mjs",
+    "test:all": "node test/handshake.mjs && node test/store.mjs && node test/webform.mjs && node test/reload.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

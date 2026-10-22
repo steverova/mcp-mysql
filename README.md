@@ -12,6 +12,70 @@ Guía práctica paso a paso: [`USO.md`](USO.md).
 
 ---
 
+## Dos piezas, un mismo archivo
+
+El proyecto tiene dos entradas que **no se llaman entre sí**: comparten el archivo de conexiones.
+
+```
+                     ┌──────────────────────────────────┐
+  tú ──terminal──▶   │ mysql-mcp  (CLI)                 │
+                     │ list · add · use · remove        │
+                     └───────────────┬──────────────────┘
+                                     │ escribe / lee
+                                     ▼
+                   %APPDATA%\mcp-mysql\connections.json
+                                     ▲
+                                     │ lee (y vigila cambios)
+                     ┌───────────────┴──────────────────┐
+  OpenCode ──spawn─▶ │ node src/index.js  (MCP, stdio)  │──▶ MySQL
+  (lo arranca él)    └──────────────────────────────────┘
+```
+
+| | CLI `mysql-mcp` | Servidor MCP `src/index.js` |
+|---|---|---|
+| Para quién | Para ti, en una terminal | Para OpenCode |
+| Quién lo arranca | Tú, a mano | OpenCode, al iniciarse |
+| Protocolo | Comandos y salida de texto | JSON-RPC por stdin/stdout |
+| ¿Queda corriendo? | No, termina al acabar | Sí, mientras OpenCode viva |
+| ¿Necesita PATH? | Sí | No (ruta absoluta) |
+
+**No hay que arrancar el MCP a mano.** OpenCode lo lanza él mismo leyendo
+`~/.config/opencode/opencode.json`:
+
+```jsonc
+"mysql": {
+  "type": "local",
+  "command": ["node", "C:/Users/steve/mcp-mysql/src/index.js"]
+}
+```
+
+Si ejecutas `mysql-mcp` en una terminal, verás que se queda colgado: está esperando JSON-RPC por
+stdin. Eso es normal, no es un fallo; ciérralo con `Ctrl+C`.
+
+### Cambios en caliente
+
+El servidor **vigila el archivo** (cada segundo). Si cambias de conexión desde la terminal:
+
+```powershell
+mysql-mcp use ventas
+```
+
+el MCP que ya está corriendo lo detecta, recarga las conexiones y te vuelve a pedir confirmación
+(`BD actual: ventas. ¿Deseas seguir con esta?`). No hace falta reiniciar OpenCode.
+
+Lo único que **sí** exige reiniciar es cambiar el **código** del servidor (`src/*.js`).
+
+### Cómo comprobar que el MCP está vivo
+
+En OpenCode, pídelo directamente: «¿en qué base estás?» → responde `connection_info`.
+Desde fuera:
+
+```bash
+opencode mcp list      # si tu versión de OpenCode lo soporta
+```
+
+---
+
 ## Instalación
 
 ```bash
@@ -24,6 +88,41 @@ mysql-mcp doctor         # verifica que conecta
 
 Si `mysql-mcp` no aparece, abre una terminal nueva o usa
 `C:\Users\steve\bin\mysql-mcp.cmd` (Windows).
+
+### Binarios (sin Node instalado)
+
+```bash
+npm run build        # solo tu plataforma
+npm run build:all    # Windows, Linux y macOS
+```
+
+| Archivo | Plataforma | Tamaño |
+|---|---|---|
+| `dist/mysql-mcp-windows-x64.exe` | Windows x64 | 84 MB |
+| `dist/mysql-mcp-linux-x64` | Linux x64 | 79 MB |
+| `dist/mysql-mcp-darwin-arm64` | macOS Apple Silicon | 61 MB |
+| `dist/mysql-mcp-darwin-x64` | macOS Intel | 68 MB |
+
+Cada binario incluye el runtime, las dependencias, el CLI y el servidor MCP. No requiere
+`npm install` ni Node en la máquina destino.
+
+```powershell
+.\dist\mysql-mcp-windows-x64.exe status
+.\dist\mysql-mcp-windows-x64.exe doctor
+```
+
+Y para que OpenCode use el binario como servidor:
+
+```jsonc
+"mysql": {
+  "type": "local",
+  "command": ["C:/Users/steve/mcp-mysql/dist/mysql-mcp-windows-x64.exe", "start"]
+}
+```
+
+El binario busca `.env` junto al ejecutable y en el directorio actual. `dist/` está en
+`.gitignore`: los binarios se adjuntan a un release, no al repositorio. No están firmados, así
+que Windows puede mostrar un aviso de SmartScreen la primera vez.
 
 ---
 
@@ -266,8 +365,9 @@ npm run test:all
 - `test/handshake.mjs` — protocolo MCP, 12 herramientas, clasificación SQL, multi-conexión.
 - `test/store.mjs` — perfiles, activa, migración de formatos antiguos, archivo corrupto, nombres.
 - `test/webform.mjs` — token, validaciones, guardado y activación.
+- `test/reload.mjs` — el MCP ve en caliente lo que cambia el CLI.
 
-41 comprobaciones, sin necesidad de un MySQL vivo.
+46 comprobaciones, sin necesidad de un MySQL vivo.
 
 ---
 

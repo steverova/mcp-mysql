@@ -47,3 +47,7 @@ dist/
 build/
 coverage/
 *.tsbuildinfo
+
+# Caché de compilación de Bun (runtime cruzado, ~300 MB)
+.bun-cache/
+*.tmp

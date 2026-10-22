@@ -10,18 +10,30 @@ import mysql from "mysql2/promise";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadStore, storePath } from "./store.js";
+import { arrancar, esEntrada } from "./cli-util.js";
 
+export async function ejecutarDoctor(argumentos = process.argv.slice(2)) {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-try {
-  process.loadEnvFile(path.join(ROOT, ".env"));
-} catch {
-  console.log("(sin .env: usando variables de entorno del proceso)");
+let archivoEnv = null;
+for (const candidato of [
+  path.join(ROOT, ".env"),
+  path.join(process.cwd(), ".env"),
+  path.join(path.dirname(process.execPath), ".env"),
+]) {
+  try {
+    process.loadEnvFile(candidato);
+    archivoEnv = candidato;
+    break;
+  } catch {
+    // Se prueba el siguiente candidato.
+  }
 }
+
+if (!archivoEnv) console.log("(sin .env: usando variables de entorno del proceso)");
 
 const bool = (valor, porDefecto) =>
   valor === undefined ? porDefecto : /^(1|true|yes|on)$/i.test(String(valor));
 
-const argumentos = process.argv.slice(2);
 const pedirTodas = argumentos.includes("--all");
 const indiceNombre = argumentos.indexOf("--name");
 const nombrePedido = indiceNombre >= 0 ? argumentos[indiceNombre + 1] : undefined;
@@ -139,3 +151,8 @@ if (fallos) {
   process.exit(1);
 }
 console.log("Todas las conexiones probadas correctamente");
+}
+
+if (esEntrada(import.meta.url)) {
+  arrancar(() => ejecutarDoctor());
+}

@@ -7,32 +7,108 @@ Esta guía es práctica: qué escribir y qué esperar en cada momento.
 
 ---
 
-## 1. Lo mínimo para empezar
+## 1. Flujo completo
+
+### Fase 0 · Instalar el CLI (una sola vez por máquina)
 
 ```powershell
-mysql-mcp add          # crea una conexión (abre el navegador)
-mysql-mcp status       # comprueba cuál está seleccionada
-mysql-mcp doctor       # verifica que conecta de verdad
+cd C:\Users\steve\mcp-mysql
+npm install
+npm link
+mysql-mcp version        # 2.1.0  → el comando global funciona
 ```
 
-Y en OpenCode, la primera vez que pidas datos verás:
+Y registrar el servidor en OpenCode (esto **ya está hecho** en este equipo). En
+`C:\Users\steve\.config\opencode\opencode.json`:
+
+```jsonc
+"mcp": {
+  "mysql": {
+    "type": "local",
+    "command": ["node", "C:/Users/steve/mcp-mysql/src/index.js"],
+    "enabled": true,
+    "timeout": 15000
+  }
+}
+```
+
+Aquí hay dos cosas distintas que se confunden fácil:
+
+| | Qué es | Cómo se hace |
+|---|---|---|
+| **Añadir el MCP a OpenCode** | Decirle a OpenCode que existe este servidor | Editar `opencode.json` (una vez) |
+| **Añadir una conexión** | Registrar una base de datos concreta | `mysql-mcp add <nombre>` (cada base) |
+
+`mysql-mcp add mcp` no hace nada especial: `mcp` sería **el nombre que tú eliges** para esa
+conexión. Nombres útiles: `local`, `ventas`, `produccion`, `steve_local`.
+
+### Fase 1 · Crear la conexión a la base
+
+```powershell
+mysql-mcp add               # abre el navegador con el formulario
+mysql-mcp add ventas        # igual, con el nombre "ventas" ya puesto
+mysql-mcp add --tui         # sin navegador, en la propia terminal
+```
+
+Rellenas: **nombre**, host, puerto, usuario, contraseña, base (opcional) y TLS. Al guardar:
+
+```powershell
+mysql-mcp status            # ¿cuál está seleccionada?
+mysql-mcp doctor            # ¿conecta de verdad?
+```
 
 ```
-BD actual: steve_local → steve_local@127.0.0.1:3306/steve_demo
-¿Deseas seguir con esta?
+BD actual:
+  conexión : steve_local
+  servidor : steve_local@127.0.0.1:3306
+  base     : steve_demo
 ```
 
-Responde que sí y ya puedes consultar. Ese mensaje es la **puerta de sesión**: hasta que
-confirmes, el MCP no ejecuta nada sobre los datos.
+Si `doctor` dice `OK`, la conexión sirve. Fin de la fase.
+
+### Fase 2 · Usarla desde OpenCode
+
+1. Reinicia OpenCode (la primera vez, para cargar el servidor).
+2. Pídele algo: «¿en qué base estás?» o «muéstrame las tablas».
+3. Responderá con la puerta de sesión:
+
+   ```
+   BD actual: steve_local → steve_local@127.0.0.1:3306/steve_demo
+   ¿Deseas seguir con esta?
+   ```
+
+4. Di «sí» → confirma y ya puedes consultar.
+
+Ese mensaje **no es un error**: es el freno que impide que el agente empiece a tocar datos en una
+base que no has confirmado.
+
+### Fase 3 · Día a día
+
+```powershell
+mysql-mcp status            # dónde estoy
+mysql-mcp use ventas        # cambiar de base (el MCP lo nota en ~1 s)
+mysql-mcp add produccion    # añadir otra
+mysql-mcp remove vieja      # borrar una
+mysql-mcp doctor --all      # comprobar todas
+```
+
+### Resumen en una línea
+
+```
+npm install → npm link → mysql-mcp add → mysql-mcp doctor → (reiniciar OpenCode) → "sí, sigue"
+```
 
 Estado actual de este equipo:
 
 | | |
 |---|---|
+| CLI | `mysql-mcp` 2.1.0, en el PATH |
+| MCP | registrado en `opencode.json` |
 | Conexión | `steve_local` |
 | Servidor | MySQL 8.0.46 en `127.0.0.1:3306` |
 | Base | `steve_demo` (tabla `clientes`, 2 filas) |
 | Archivo | `C:\Users\steve\AppData\Roaming\mcp-mysql\connections.json` |
+| Pendiente | reiniciar OpenCode para cargar el servidor nuevo |
 
 ---
 
@@ -84,6 +160,23 @@ BD actual:
 ---
 
 ## 3. Dentro de OpenCode
+
+### Quién arranca qué
+
+Dos piezas que **no se llaman entre sí**; comparten el archivo de conexiones:
+
+| | CLI `mysql-mcp` | Servidor MCP |
+|---|---|---|
+| Quién lo arranca | Tú, en la terminal | OpenCode, al iniciarse |
+| Termina solo | Sí | No: vive mientras OpenCode viva |
+| Necesita PATH | Sí | No (OpenCode usa ruta absoluta) |
+
+No arranques el MCP a mano: si ejecutas `mysql-mcp` sin subcomando, se queda esperando JSON-RPC
+por stdin y parece colgado. Es correcto; `Ctrl+C` para salir.
+
+El servidor **vigila el archivo**: si haces `mysql-mcp use ventas` mientras OpenCode está abierto,
+lo detecta en ~1 segundo y te pedirá confirmar la nueva base. Solo cambiar el **código** obliga a
+reiniciar OpenCode.
 
 ### La puerta de sesión
 

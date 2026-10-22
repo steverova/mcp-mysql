@@ -17,6 +17,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import mysql from "mysql2/promise";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -30,12 +31,20 @@ import {
   validarNombre,
 } from "./store.js";
 import { abrirFormulario } from "./webform.js";
+import { esEntrada } from "./cli-util.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-try {
-  process.loadEnvFile(path.join(ROOT, ".env"));
-} catch {
-  // Sin .env: se usan las variables de entorno del proceso.
+for (const archivo of [
+  path.join(ROOT, ".env"),
+  path.join(process.cwd(), ".env"),
+  path.join(path.dirname(process.execPath), ".env"),
+]) {
+  try {
+    process.loadEnvFile(archivo);
+    break;
+  } catch {
+    // Se prueba el siguiente candidato.
+  }
 }
 
 const bool = (value, fallback) => {
@@ -58,6 +67,7 @@ const CONFIG = {
 let perfiles = new Map();
 let activo = "";
 let confirmada = false;
+let confirmadaPara = "";
 let formularioAbierto = false;
 
 /** nombre -> { clave, pool } */
@@ -112,7 +122,25 @@ function recargarPerfiles() {
   }
 }
 
-recargarPerfiles();
+function vigilarAlmacen() {
+  // El CLI escribe el mismo archivo: si cambia por fuera, se recarga sin reiniciar.
+  // Los cambios hechos por el propio MCP ya actualizan perfiles y confirmación.
+  try {
+    fs.watchFile(storePath(), { interval: 1000 }, (actual, anterior) => {
+      if (actual.mtimeMs === anterior.mtimeMs) return;
+      recargarPerfiles();
+      if (confirmadaPara !== activo) {
+        confirmada = false;
+        confirmadaPara = "";
+      }
+      console.error(
+        `[mcp-mysql] almacén recargado desde fuera -> activa=${activo || "-"} conexiones=${[...perfiles.keys()].join(",") || "(ninguna)"}`,
+      );
+    });
+  } catch (error) {
+    console.error("[mcp-mysql] no se pudo vigilar el almacén:", error.message);
+  }
+}
 
 function resolverNombre(solicitado) {
   const nombre = (solicitado || "").trim() || activo;
@@ -195,6 +223,7 @@ async function abrirDialogoCredenciales({ prefill, nombre } = {}) {
         if (resultado.ok) {
           activo = resultado.nombre;
           confirmada = true;
+          confirmadaPara = resultado.nombre;
           recargarPerfiles();
           console.error(
             `[mcp-mysql] conexión "${resultado.nombre}" guardada -> ${descripcionPerfil(resultado.credentials)}`,
@@ -242,16 +271,17 @@ function pistaDeError(error) {
  * consultar "la que quedó seleccionada" sin avisar de cuál es.
  */
 function exigirConfirmacion(conexion) {
-  if (!perfiles.size || confirmada) return;
+  if (!perfiles.size) return;
 
-  const nombre = conexion ? resolverNombre(conexion) : activo;
-  if (!nombre) return;
+  const objetivo = conexion ? resolverNombre(conexion) : activo;
+  if (!objetivo) return;
+  if (confirmada && confirmadaPara === objetivo) return;
 
-  const credenciales = perfiles.get(nombre);
+  const credenciales = perfiles.get(objetivo);
   throw new UserError(
-    `BD actual: ${nombre} → ${credenciales.user}@${credenciales.host}:${credenciales.port}/${credenciales.database || "(sin base)"}\n\n` +
+    `BD actual: ${objetivo} → ${credenciales.user}@${credenciales.host}:${credenciales.port}/${credenciales.database || "(sin base)"}\n\n` +
       "Todavía no se ha confirmado en esta sesión. Muestra este mensaje al usuario y pregúntale:\n" +
-      `  «BD actual: ${nombre}. ¿Deseas seguir con esta?»\n\n` +
+      `  «BD actual: ${objetivo}. ¿Deseas seguir con esta?»\n\n` +
       "Si dice que sí: llama a confirm_connection.\n" +
       'Si prefiere otra: use_connection({nombre:"..."}) o confirm_connection({conexion:"..."}).',
   );
@@ -683,6 +713,7 @@ server.registerTool(
   wrap(async ({ nombre, database }) => {
     const resultado = await activarConexion(nombre, database);
     confirmada = true;
+    confirmadaPara = resultado.activa;
     return text({
       ...resultado,
       mensaje: resultado.conectado
@@ -712,6 +743,7 @@ server.registerTool(
 
     const resultado = await activarConexion(conexion, database);
     confirmada = true;
+    confirmadaPara = resultado.activa;
 
     return text({
       confirmada: true,
@@ -749,6 +781,7 @@ server.registerTool(
     perfiles.delete(nombre);
     if (!perfiles.has(activo)) activo = perfiles.has("env") ? "env" : [...perfiles.keys()][0] || "";
     confirmada = false;
+    confirmadaPara = "";
 
     return text({
       borrada: nombre,
@@ -771,6 +804,7 @@ server.registerTool(
     const borrado = deleteStore();
     recargarPerfiles();
     confirmada = false;
+    confirmadaPara = "";
 
     return text({
       archivo_borrado: borrado,
@@ -1031,13 +1065,22 @@ server.registerTool(
 
 /** ------------------------------------------------------------------ */
 
-const transporte = new StdioServerTransport();
-await server.connect(transporte);
-console.error(
-  `[mcp-mysql] listo -> conexiones=${[...perfiles.keys()].join(",") || "(ninguna)"} activa=${activo || "-"} escritura=${CONFIG.writeEnabled ? "on" : "off"}`,
-);
+export async function iniciarServidor() {
+  recargarPerfiles();
+  vigilarAlmacen();
 
-if (!perfiles.size && bool(process.env.MYSQL_PROMPT_ON_START, true)) {
-  const resultado = await abrirDialogoCredenciales();
-  console.error("[mcp-mysql] sin conexiones:", resultado.url || resultado.mensaje);
+  const transporte = new StdioServerTransport();
+  await server.connect(transporte);
+  console.error(
+    `[mcp-mysql] listo -> conexiones=${[...perfiles.keys()].join(",") || "(ninguna)"} activa=${activo || "-"} escritura=${CONFIG.writeEnabled ? "on" : "off"}`,
+  );
+
+  if (!perfiles.size && bool(process.env.MYSQL_PROMPT_ON_START, true)) {
+    const resultado = await abrirDialogoCredenciales();
+    console.error("[mcp-mysql] sin conexiones:", resultado.url || resultado.mensaje);
+  }
+}
+
+if (esEntrada(import.meta.url)) {
+  await iniciarServidor();
 }
