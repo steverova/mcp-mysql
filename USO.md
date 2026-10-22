@@ -18,19 +18,17 @@ npm link
 mysql-mcp version        # 2.1.0  → el comando global funciona
 ```
 
-Y registrar el servidor en OpenCode (esto **ya está hecho** en este equipo). En
-`C:\Users\steve\.config\opencode\opencode.json`:
+Y registrar el servidor en OpenCode (en este equipo **ya está hecho**). No hace falta editar
+JSON: el propio CLI lo escribe.
 
-```jsonc
-"mcp": {
-  "mysql": {
-    "type": "local",
-    "command": ["node", "C:/Users/steve/mcp-mysql/src/index.js"],
-    "enabled": true,
-    "timeout": 15000
-  }
-}
+```powershell
+mysql-mcp opencode            # config global de OpenCode
+mysql-mcp opencode --project  # solo para el proyecto actual
+mysql-mcp opencode --dry-run  # ver qué cambiaría
 ```
+
+Añade la entrada `mcp.mysql`, pone los permisos de escritura en `ask`, conserva el resto de la
+configuración y deja una copia `opencode.json.bak-<fecha>`. Si ya estaba, no cambia nada.
 
 Aquí hay dos cosas distintas que se confunden fácil:
 
@@ -129,6 +127,7 @@ Todos funcionan desde cualquier carpeta.
 | `mysql-mcp doctor` | Prueba la conexión activa |
 | `mysql-mcp doctor --all` | Prueba todas |
 | `mysql-mcp doctor --name ventas` | Prueba una concreta |
+| `mysql-mcp opencode` | Registra el MCP en OpenCode (sin editar JSON) |
 | `mysql-mcp path` | Ruta del archivo de conexiones |
 | `mysql-mcp help` | Ayuda |
 

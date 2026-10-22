@@ -304,6 +304,23 @@ confirm_write(sql, token, conexion?)  ->  { estado: "EJECUTADO", afectadas: N }
 
 ## Registro en OpenCode
 
+Lo normal es no tocar JSON a mano:
+
+```bash
+mysql-mcp opencode            # configuración global (~/.config/opencode/opencode.json)
+mysql-mcp opencode --project  # ./opencode.json del proyecto actual
+mysql-mcp opencode --dry-run  # ver qué cambiaría, sin escribir
+```
+
+Escribe o reemplaza `mcp.mysql`, añade los permisos `mysql_confirm_write` y
+`mysql_reset_credentials` en `ask`, conserva el resto de tu configuración y deja una copia
+`opencode.json.bak-<fecha>`. Es idempotente: si ya estaba, no cambia nada.
+
+Si el binario compilado es el que ejecuta el comando, la entrada apunta al propio `.exe` con
+`"start"`; si corres desde el código, apunta a `node src/index.js`.
+
+El resultado es este:
+
 ```jsonc
 {
   "mcp": {
@@ -319,6 +336,13 @@ confirm_write(sql, token, conexion?)  ->  { estado: "EJECUTADO", afectadas: N }
     "mysql_reset_credentials": "ask"
   }
 }
+```
+
+También puedes usar el comando nativo de OpenCode, aunque no gestiona los permisos:
+
+```bash
+opencode mcp add mysql --global -- node C:/Users/steve/mcp-mysql/src/index.js
+opencode mcp list   # comprueba que conecta
 ```
 
 El permiso `ask` es la barrera visible en la interfaz; el token del servidor es la barrera real y

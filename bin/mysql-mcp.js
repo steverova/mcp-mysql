@@ -15,6 +15,7 @@ import paquete from "../package.json" with { type: "json" };
 import { ejecutarWizard } from "../src/wizard.js";
 import { ejecutarDoctor } from "../src/doctor.js";
 import { ejecutarFormulario } from "../src/form.js";
+import { ejecutarOpenCode } from "../src/opencode.js";
 
 const version = paquete.version;
 
@@ -37,6 +38,7 @@ ${titulo("Uso")}
   mysql-mcp remove [nombre]     elimina una (sin nombre: selector)
   mysql-mcp remove --all        elimina todas
   mysql-mcp doctor [--all]      prueba las conexiones
+  mysql-mcp opencode            registra el MCP en OpenCode (sin editar JSON)
   mysql-mcp path                dónde se guardan las conexiones
   mysql-mcp help                esta ayuda
 
@@ -123,6 +125,12 @@ switch (comando) {
   case "test":
   case "check":
     await ejecutarDoctor(resto);
+    break;
+
+  case "opencode":
+  case "install":
+  case "register":
+    await ejecutarOpenCode(resto);
     break;
 
   case "path": {
