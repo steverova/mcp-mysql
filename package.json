@@ -1,0 +1,32 @@
+{
+  "name": "mcp-mysql",
+  "version": "2.1.0",
+  "private": true,
+  "description": "Servidor MCP para MySQL multi-conexión, multiplataforma, con escritura en dos pasos",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "mysql-mcp": "bin/mysql-mcp.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "login": "node src/wizard.js",
+    "logout": "node src/wizard.js --delete --all",
+    "list": "node src/wizard.js --list",
+    "use": "node src/wizard.js --use",
+    "form": "node src/form.js",
+    "doctor": "node src/doctor.js",
+    "test": "node test/handshake.mjs",
+    "test:store": "node test/store.mjs",
+    "test:form": "node test/webform.mjs",
+    "test:all": "node test/handshake.mjs && node test/store.mjs && node test/webform.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "mysql2": "^3.24.6",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}

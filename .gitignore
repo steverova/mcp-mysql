@@ -1,0 +1,49 @@
+# Dependencias
+node_modules/
+.pnpm-store/
+
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+# Si apuntas MCP_MYSQL_STORE dentro del proyecto, el archivo de conexiones
+# contiene contraseñas en claro: nunca debe versionarse.
+connections.json
+credentials*.json
+*.pem
+*.key
+
+# Scripts temporales de desarrollo (suelen llevar credenciales dentro)
+/dbg*.mjs
+/probe*.mjs
+/demo.mjs
+/verificar.mjs
+/setup-conn.mjs
+/tmp/
+
+# Volcados y copias de base de datos
+*.dump
+*.sql.gz
+dumps/
+backups/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build y cobertura
+dist/
+build/
+coverage/
+*.tsbuildinfo
