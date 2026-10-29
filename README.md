@@ -3,21 +3,64 @@
 MySQL MCP server for OpenCode: **multiple named connections**, free reads, and writes that always
 require confirmation. Cross-platform, no native dependencies.
 
+## Install (binary, recommended)
+
+Download the file for your platform from
+[the latest release](https://github.com/steverova/mcp-mysql/releases/latest):
+
+| Platform | File |
+|---|---|
+| Windows x64 | `mysql-mcp-windows-x64.exe` |
+| Linux x64 | `mysql-mcp-linux-x64` |
+| macOS Apple Silicon | `mysql-mcp-darwin-arm64` |
+| macOS Intel | `mysql-mcp-darwin-x64` |
+
+No Node, no `npm install`: the runtime and dependencies are inside the file.
+
+### Windows
+
+```powershell
+New-Item -ItemType Directory -Force C:\Tools\mcp-mysql
+Move-Item "$env:USERPROFILE\Downloads\mysql-mcp-windows-x64.exe" C:\Tools\mcp-mysql\mysql-mcp.exe
+Unblock-File C:\Tools\mcp-mysql\mysql-mcp.exe          # clears the SmartScreen mark
+
+$dir = "C:\Tools\mcp-mysql"
+if (([Environment]::GetEnvironmentVariable("Path","User")) -split ';' -notcontains $dir) {
+  [Environment]::SetEnvironmentVariable("Path", "$([Environment]::GetEnvironmentVariable('Path','User'));$dir", "User")
+}
+```
+
+Open a new terminal afterwards.
+
+### macOS / Linux
+
 ```bash
-npm install && npm link     # installs the global `mysql-mcp` command
-mysql-mcp add               # create a connection (opens the browser)
-mysql-mcp doctor            # verify it connects
-mysql-mcp opencode          # register the MCP in OpenCode
+mkdir -p ~/.local/bin
+mv ~/Downloads/mysql-mcp-darwin-arm64 ~/.local/bin/mysql-mcp
+chmod +x ~/.local/bin/mysql-mcp
+xattr -d com.apple.quarantine ~/.local/bin/mysql-mcp   # macOS only
+export PATH="$HOME/.local/bin:$PATH"                    # add to ~/.zshrc or ~/.bashrc
 ```
 
-Restart OpenCode. The first time it touches data it will ask:
+### Then, once
+
+```bash
+mysql-mcp add          # create the first connection (opens the browser)
+mysql-mcp doctor       # verify it connects
+mysql-mcp opencode     # register the MCP in OpenCode
+```
+
+Restart OpenCode. The first time it touches data it asks:
 
 ```
-Current DB: steve_local → steve_local@127.0.0.1:3306/steve_demo
+Current DB: local → local@127.0.0.1:3306/demo
 Do you want to continue with this one?
 ```
 
 Answer yes and it calls `confirm_connection`. Nothing runs before you confirm.
+
+> If you skip the PATH step, use the full path (`C:\Tools\mcp-mysql\mysql-mcp.exe status`). OpenCode
+> never needs the PATH: `mysql-mcp opencode` writes the absolute path into its config.
 
 ---
 
@@ -50,6 +93,12 @@ Answer yes and it calls `confirm_connection`. Nothing runs before you confirm.
 Any data tool accepts `conexion` to target another connection without switching:
 
 > "query sales without changing the active connection"
+
+### One selection per window
+
+Each OpenCode window keeps its own active connection. `mysql-mcp use` only changes the **default for
+new windows**; a window that already confirmed keeps working with its own. Restart a window to pick
+up a new default.
 
 ## Tools
 
@@ -91,30 +140,20 @@ user (`SELECT, INSERT, UPDATE, DELETE` on your schema only), or skip the file en
 Messages exist in Spanish and English, chosen from your OS regional settings. Force one with
 `MCP_MYSQL_LANG=es` or `MCP_MYSQL_LANG=en`. Texts live in `src/locales/{es,en}.json`.
 
-## Binaries (no Node needed)
+---
+
+## From source (alternative)
+
+Only needed if you want to modify the code:
 
 ```bash
-npm run build        # current platform
-npm run build:all    # Windows, Linux, macOS
-```
-
-| File | Platform |
-|---|---|
-| `dist/mysql-mcp-windows-x64.exe` | Windows x64 |
-| `dist/mysql-mcp-linux-x64` | Linux x64 |
-| `dist/mysql-mcp-darwin-arm64` | macOS Apple Silicon |
-| `dist/mysql-mcp-darwin-x64` | macOS Intel |
-
-Use the binary as the server with `"command": ["<path>/mysql-mcp.exe", "start"]`. Unsigned: Windows
-may warn with SmartScreen the first time.
-
-## Tests
-
-```bash
-npm run test:all     # 60 checks, no live MySQL needed
+npm install
+npm link          # same `mysql-mcp` command, running on Node
+npm run test:all  # 60 checks, no live MySQL needed
+npm run build     # rebuild the binary for your platform
 ```
 
 ## More
 
-- [`USO.md`](USO.md) — step-by-step guide (Spanish, more detail)
+- [`USAGE.md`](USAGE.md) — step-by-step guide (Spanish, more detail)
 - `mysql-mcp opencode --dry-run` — see exactly what would change in your OpenCode config

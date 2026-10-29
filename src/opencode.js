@@ -16,11 +16,11 @@ import { t } from "./i18n.js";
 
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const color = (codigo, texto) => (process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto);
-const ok = (texto) => color("32", texto);
-const dim = (texto) => color("90", texto);
-const mal = (texto) => color("31", texto);
-const warning = (texto) => color("33", texto);
+const color = (code, text) => (process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text);
+const ok = (text) => color("32", text);
+const dim = (text) => color("90", text);
+const mal = (text) => color("31", text);
+const warning = (text) => color("33", text);
 
 // Path of the global opencode.json.
 export function globalConfigPath() {
@@ -45,11 +45,11 @@ export function serverCommand() {
 function readConfig(file) {
   if (!fs.existsSync(file)) return { config: {}, existed: false };
 
-  const texto = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
-  if (!texto) return { config: {}, existed: true };
+  const text = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
+  if (!text) return { config: {}, existed: true };
 
   try {
-    return { config: JSON.parse(texto), existed: true };
+    return { config: JSON.parse(text), existed: true };
   } catch {
     throw new Error(t("opencode.invalidJson", { file }));
   }

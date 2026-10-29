@@ -34,10 +34,10 @@ export function storePath() {
 
 export const hasStoredConnections = () => fs.existsSync(storePath());
 
-const vacio = () => ({ version: FORMATO, active: "", connections: {} });
+const emptyStore = () => ({ version: FORMATO, active: "", connections: {} });
 
 function normalizar(data) {
-  if (!data || typeof data !== "object") return vacio();
+  if (!data || typeof data !== "object") return emptyStore();
 
   // Compatibility: old formats with "profiles" or with loose credentials.
   const origin = data.connections || data.profiles || null;
@@ -45,7 +45,7 @@ function normalizar(data) {
     if (data.user || data.host) {
       return { version: FORMATO, active: "default", connections: { default: data } };
     }
-    return vacio();
+    return emptyStore();
   }
 
   const connections = {};
@@ -76,26 +76,26 @@ function restrictPermissions(file) {
 
 export function loadStore() {
   const file = storePath();
-  if (!fs.existsSync(file)) return vacio();
+  if (!fs.existsSync(file)) return emptyStore();
 
-  const contenido = fs.readFileSync(file, "utf8").trim();
-  if (!contenido) return vacio();
+  const content = fs.readFileSync(file, "utf8").trim();
+  if (!content) return emptyStore();
 
   try {
-    return normalizar(JSON.parse(contenido));
+    return normalizar(JSON.parse(content));
   } catch {
     throw new Error(t("store.corrupt", { file }));
   }
 }
 
 export function saveStore(store) {
-  const normalizado = normalizar(store);
+  const normalized = normalizar(store);
   const file = storePath();
 
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify(normalizado, null, 2), { encoding: "utf8", mode: 0o600 });
+  fs.writeFileSync(file, JSON.stringify(normalized, null, 2), { encoding: "utf8", mode: 0o600 });
   restrictPermissions(file);
-  return normalizado;
+  return normalized;
 }
 
 export function upsertConnection(name, creds, { activate = true } = {}) {
@@ -116,7 +116,7 @@ export function removeConnection(name) {
 
 export function setActiveConnection(name) {
   const store = loadStore();
-  if (!store.connections[name]) throw new Error(`No exists la conexión "${name}".`);
+  if (!store.connections[name]) throw new Error(t("store.notFound", { name }));
   store.active = name;
   return saveStore(store);
 }

@@ -1,6 +1,6 @@
 /**
- * Registro automático en OpenCode: añade mcp.mysql y permisos sin romper
- * el resto de la configuración, y es idempotente.
+ * Automatic OpenCode registration: adds mcp.mysql and permissions without breaking
+ * the rest of the configuration; it is idempotent.
  *
  *   npm run test:opencode
  */
@@ -16,17 +16,17 @@ const CONFIG = path.join(os.tmpdir(), "mcp-mysql-test", "opencode.json");
 
 let failures = 0;
 const check = (name, condicion, detalle = "") => {
-  console.log(`${condicion ? "OK   " : "FALLO"} ${name}${detalle ? " -> " + detalle : ""}`);
+  console.log(`${condicion ? "OK   " : "FAIL"} ${name}${detalle ? " -> " + detalle : ""}`);
   if (!condicion) failures++;
 };
 
 const run = () =>
   spawnSync(process.execPath, [BIN, "opencode"], {
     encoding: "utf8",
-    env: { ...process.env, MCP_MYSQL_LANG: "es", MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
+    env: { ...process.env, MCP_MYSQL_LANG: "en", MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
   });
 
-// Configuración previa con others cosas que NO se deben perder.
+// Previous config with other things that must NOT be lost.
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(
   CONFIG,
@@ -44,39 +44,39 @@ fs.writeFileSync(
 );
 
 const firstRun = run();
-check("la firstRun ejecución termina bien", firstRun.status === 0, (firstRun.stderr || "").slice(0, 60));
+check("first run succeeds", firstRun.status === 0, (firstRun.stderr || "").slice(0, 60));
 
 const config = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
-check("añade mcp.mysql", config.mcp?.mysql?.type === "local");
-check("comando correcto", JSON.stringify(config.mcp.mysql.command) === JSON.stringify(["node", path.join(RAIZ, "src", "index.js").replace(/\\/g, "/")]), JSON.stringify(config.mcp.mysql.command));
-check("active el serverInfo", config.mcp.mysql.enabled === true);
-check("conserva aws-mcp", Boolean(config.mcp["aws-mcp"]));
-check("conserva plugins", Array.isArray(config.plugins) && config.plugins.length === 1);
-check("conserva permisos previos", config.permission.shell?.["git *"] === "allow");
-check("añade permiso confirm_write", config.permission.mysql_confirm_write === "ask");
-check("añade permiso reset_credentials", config.permission.mysql_reset_credentials === "ask");
+check("adds mcp.mysql", config.mcp?.mysql?.type === "local");
+check("command is correct", JSON.stringify(config.mcp.mysql.command) === JSON.stringify(["node", path.join(RAIZ, "src", "index.js").replace(/\\/g, "/")]), JSON.stringify(config.mcp.mysql.command));
+check("registers the server in OpenCode", config.mcp.mysql.enabled === true);
+check("keeps aws-mcp", Boolean(config.mcp["aws-mcp"]));
+check("keeps plugins", Array.isArray(config.plugins) && config.plugins.length === 1);
+check("keeps previous permissions", config.permission.shell?.["git *"] === "allow");
+check("adds confirm_write permission", config.permission.mysql_confirm_write === "ask");
+check("adds reset_credentials permission", config.permission.mysql_reset_credentials === "ask");
 
 const backupFiles = fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-"));
-check("deja backupPath de seguridad", backupFiles.length >= 1, backupFiles[0] || "");
+check("leaves a backup file", backupFiles.length >= 1, backupFiles[0] || "");
 
 const secondRun = run();
-check("la secondRun ejecución es idempotente", secondRun.status === 0 && secondRun.stdout.includes("Ya estaba registrado"), secondRun.stdout.trim().split("\n").pop());
-check("no duplica la backupPath", fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-")).length === backupFiles.length);
+check("second run is idempotent", secondRun.status === 0 && secondRun.stdout.includes("Already registered"), secondRun.stdout.trim().split("\n").pop());
+check("does not duplicate the backup", fs.readdirSync(path.dirname(CONFIG)).filter((f) => f.startsWith("opencode.json.bak-")).length === backupFiles.length);
 
-// ---dry-run no debe escribir.
+// --dry-run must not write.
 fs.rmSync(CONFIG, { force: true });
 const dry = spawnSync(process.execPath, [BIN, "opencode", "--dry-run"], {
   encoding: "utf8",
-  env: { ...process.env, MCP_MYSQL_LANG: "es", MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
+  env: { ...process.env, MCP_MYSQL_LANG: "en", MCP_MYSQL_OPENCODE_CONFIG: CONFIG },
 });
-check("--dry-run informa changes", dry.status === 0 && dry.stdout.includes("Cambios que aplicaría"));
-check("--dry-run no crea el file", !fs.existsSync(CONFIG));
+check("--dry-run reports changes", dry.status === 0 && dry.stdout.includes("Changes it would apply"));
+check("--dry-run does not create the file", !fs.existsSync(CONFIG));
 
 fs.rmSync(CONFIG, { force: true });
 
 console.log("");
 if (failures) {
-  console.error(`${failures} prueba(s) fallidas`);
+  console.error(`${failures} test(s) failed`);
   process.exit(1);
 }
-console.log("Todas las pruebas pasaron");
+console.log("All tests passed");

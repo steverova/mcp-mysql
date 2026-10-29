@@ -24,18 +24,18 @@ import { runCli, isEntryPoint } from "./cli-util.js";
 import { t } from "./i18n.js";
 
 export async function runWizard(args = process.argv.slice(2)) {
-const color = (codigo, texto) =>
-  process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto;
-const title = (texto) => color("1;36", texto);
-const ok = (texto) => color("32", texto);
-const warning = (texto) => color("33", texto);
-const error = (texto) => color("31", texto);
-const dim = (texto) => color("90", texto);
+const color = (code, text) =>
+  process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text;
+const title = (text) => color("1;36", text);
+const ok = (text) => color("32", text);
+const warning = (text) => color("33", text);
+const error = (text) => color("31", text);
+const dim = (text) => color("90", text);
 
 const hasFlag = (name) => args.includes(name);
 const valueOf = (name) => {
-  const indice = args.indexOf(name);
-  return indice >= 0 ? args[indice + 1] : undefined;
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
 };
 
 const store = loadStore();
@@ -122,15 +122,15 @@ if (!process.stdin.isTTY) {
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-async function ask(texto, porDefecto = "") {
-  const suffix = porDefecto !== "" ? dim(` [${porDefecto}]`) : "";
-  const answer = (await rl.question(`${texto}${suffix}: `)).trim();
-  return answer || porDefecto;
+async function ask(text, defaultValue = "") {
+  const suffix = defaultValue !== "" ? dim(` [${defaultValue}]`) : "";
+  const answer = (await rl.question(`${text}${suffix}: `)).trim();
+  return answer || defaultValue;
 }
 
-async function askSecret(texto) {
+async function askSecret(text) {
   rl.pause();
-  process.stdout.write(`${texto}: `);
+  process.stdout.write(`${text}: `);
 
   return new Promise((resolve) => {
     const stdin = process.stdin;
@@ -176,10 +176,10 @@ async function askSecret(texto) {
   });
 }
 
-async function askYesNo(texto, porDefecto = true) {
-  const si = t("common.yes").charAt(0);
+async function askYesNo(text, defaultValue = true) {
+  const yes = t("common.yes").charAt(0);
   const no = t("common.no").charAt(0);
-  const answer = (await ask(texto, porDefecto ? si : no)).toLowerCase();
+  const answer = (await ask(text, defaultValue ? yes : no)).toLowerCase();
   return answer.startsWith(si) || answer.startsWith("y") || answer.startsWith("s");
 }
 
@@ -192,11 +192,11 @@ async function elegir(message, action) {
 
   console.log("");
   console.log(title(t("wizard.pick.title")));
-  names.forEach((name, indice) => {
+  names.forEach((name, index) => {
     const c = store.connections[name];
     const marker = name === store.active ? ok("*") : " ";
     console.log(
-      `  ${marker} ${String(indice + 1).padStart(2)}. ${name.padEnd(18)} ${dim(
+      `  ${marker} ${String(index + 1).padStart(2)}. ${name.padEnd(18)} ${dim(
         `${c.user}@${c.host}:${c.port}/${c.database || noDatabase()}`,
       )}`,
     );
@@ -324,8 +324,8 @@ if (await askYesNo(t("wizard.testNow"), true)) {
       user: info.user,
       base: info.base || t("common.none"),
     })));
-  } catch (excepcion) {
-    console.log(error("  " + t("wizard.cannotConnect", { error: `${excepcion.code || ""} ${excepcion.sqlMessage || excepcion.message}` })));
+  } catch (caught) {
+    console.log(error("  " + t("wizard.cannotConnect", { error: `${caught.code || ""} ${caught.sqlMessage || caught.message}` })));
     if (!(await askYesNo(t("wizard.saveAnyway"), false))) {
       rl.close();
       process.exit(1);

@@ -1,5 +1,5 @@
 /**
- * Prueba del almacén multiplataforma: connections, active, borrado y validación.
+ * Cross-platform store test: connections, active, deletion and validation.
  *
  *   npm run test:store
  */
@@ -9,7 +9,7 @@ import path from "node:path";
 
 const STORE = path.join(os.tmpdir(), "mcp-mysql-test", "store.json");
 process.env.MCP_MYSQL_STORE = STORE;
-process.env.MCP_MYSQL_LANG = "es";
+process.env.MCP_MYSQL_LANG = "en";
 fs.rmSync(STORE, { force: true });
 
 const {
@@ -26,13 +26,13 @@ const {
 
 let failures = 0;
 const check = (name, condicion, detalle = "") => {
-  console.log(`${condicion ? "OK   " : "FALLO"} ${name}${detalle ? " -> " + detalle : ""}`);
+  console.log(`${condicion ? "OK   " : "FAIL"} ${name}${detalle ? " -> " + detalle : ""}`);
   if (!condicion) failures++;
 };
 
-check("empieza vacío", loadStore().connections && Object.keys(loadStore().connections).length === 0);
-check("hasStoredConnections falso", !hasStoredConnections());
-check("storePath respeta la variable", storePath() === STORE);
+check("starts empty", loadStore().connections && Object.keys(loadStore().connections).length === 0);
+check("hasStoredConnections is false", !hasStoredConnections());
+check("storePath honors the variable", storePath() === STORE);
 
 upsertConnection("local", {
   host: "127.0.0.1",
@@ -53,25 +53,25 @@ upsertConnection("ventas", {
 });
 
 const store = loadStore();
-check("dos connections guardadas", Object.keys(store.connections).length === 2, Object.keys(store.connections).join(", "));
-check("la última queda active", store.active === "ventas", store.active);
-check("base de data saved", store.connections.ventas.database === "ventas");
+check("two connections saved", Object.keys(store.connections).length === 2, Object.keys(store.connections).join(", "));
+check("the last one becomes active", store.active === "ventas", store.active);
+check("database saved", store.connections.ventas.database === "ventas");
 
 setActiveConnection("local");
-check("se puede cambiar la active", loadStore().active === "local");
+check("the active one can be changed", loadStore().active === "local");
 
 const permisos = fs.statSync(STORE).mode & 0o777;
 check(
   "permisos restringidos",
   process.platform === "win32" ? true : (permisos & 0o077) === 0,
-  process.platform === "win32" ? "ACL (no comprobable aquí)" : permisos.toString(8),
+  process.platform === "win32" ? "ACL (not checkable here)" : permisos.toString(8),
 );
 
 const borrado = removeConnection("local");
-check("borrar conexión", borrado.deleted && !loadStore().connections.local);
-check("la active pasa a otra", loadStore().active === "ventas", loadStore().active);
+check("deletes a connection", borrado.deleted && !loadStore().connections.local);
+check("the active one moves to another", loadStore().active === "ventas", loadStore().active);
 
-// Compatibilidad con el formato antiguo (creds sueltas).
+// Compatibility with the old format (loose credentials).
 fs.mkdirSync(path.dirname(STORE), { recursive: true });
 fs.writeFileSync(
   STORE,
@@ -79,31 +79,31 @@ fs.writeFileSync(
 );
 const migrado = loadStore();
 check(
-  "migra el formato antiguo a la conexión 'default'",
+  "migrates the old format to the 'default' connection",
   migrado.connections.default && migrado.connections.default.user === "legacy" && migrado.active === "default",
 );
 
 // Archivo corrupto: message claro.
 fs.writeFileSync(STORE, "{ esto no es json");
-let mensajeCorrupto = "";
+let corruptMessage = "";
 try {
   loadStore();
 } catch (error) {
-  mensajeCorrupto = error.message;
+  corruptMessage = error.message;
 }
-check("detecta file corrupto", /corrupto/.test(mensajeCorrupto), mensajeCorrupto.slice(0, 60));
+check("detects a corrupt file", /corrupt/.test(corruptMessage), corruptMessage.slice(0, 60));
 
-// Validación de names.
-check("rechaza name vacío", validateName("") !== null);
-check("rechaza caracteres raros", validateName("mi;drop") !== null);
-check("acepta name normal", validateName("prod-ventas 2") === null);
+// Name validation.
+check("rejects an empty name", validateName("") !== null);
+check("rejects odd characters", validateName("mi;drop") !== null);
+check("accepts a normal name", validateName("prod-ventas 2") === null);
 
 deleteStore();
-check("borrar todo", !hasStoredConnections());
+check("deletes everything", !hasStoredConnections());
 
 console.log("");
 if (failures) {
-  console.error(`${failures} prueba(s) fallidas`);
+  console.error(`${failures} test(s) failed`);
   process.exit(1);
 }
-console.log("Todas las pruebas pasaron");
+console.log("All tests passed");

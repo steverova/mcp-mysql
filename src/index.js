@@ -26,7 +26,6 @@ import {
   hasStoredConnections,
   loadStore,
   removeConnection,
-  setActiveConnection,
   storePath,
   upsertConnection,
   validateName,
@@ -51,7 +50,7 @@ for (const file of [
 
 const bool = (value, fallback) => {
   if (value === undefined || value === "") return fallback;
-  return /^(1|true|yes|on|si|sí)$/i.test(String(value).trim());
+  return /^(1|true|yes|on)$/i.test(String(value).trim());
 };
 
 const CONFIG = {
@@ -70,13 +69,15 @@ let connections = new Map();
 let activeName = "";
 let confirmed = false;
 let confirmedFor = "";
+// Once this window picks a connection, it stops following the shared default.
+let sessionChose = false;
 let activeFormOpen = false;
 
 /** name -> { key, pool } */
 const pools = new Map();
 
 const describeConnection = (c) =>
-  `${c.user}@${c.host}:${Number(c.port) || 3306}/${c.database || "(sin base)"}`;
+  `${c.user}@${c.host}:${Number(c.port) || 3306}/${c.database || t("common.noDatabase")}`;
 
 function profileFromEnv() {
   if (!process.env.MYSQL_USER) return null;
@@ -97,21 +98,21 @@ function reloadConnections() {
   const desdeEnv = profileFromEnv();
   if (desdeEnv) next.set("env", desdeEnv);
 
-  let guardados = { active: "", connections: {} };
+  let savedStore = { active: "", connections: {} };
   try {
-    guardados = loadStore();
+    savedStore = loadStore();
   } catch (error) {
     console.error("[mcp-mysql] could not read the store:", error.message);
   }
 
-  for (const [name, creds] of Object.entries(guardados.connections)) {
+  for (const [name, creds] of Object.entries(savedStore.connections)) {
     // The environment profile cannot be overwritten from the store.
     if (!next.has(name)) next.set(name, creds);
   }
 
   connections = next;
 
-  if (guardados.active && connections.has(guardados.active)) activeName = guardados.active;
+  if (!sessionChose && savedStore.active && connections.has(savedStore.active)) activeName = savedStore.active;
   else if (!connections.has(activeName)) activeName = connections.has("env") ? "env" : [...connections.keys()][0] || "";
 
   for (const name of previousNames) {
@@ -136,11 +137,11 @@ function watchStore() {
         confirmedFor = "";
       }
       console.error(
-        `[mcp-mysql] almacén recargado desde fuera -> active=${activeName || "-"} connections=${[...connections.keys()].join(",") || "(ninguna)"}`,
+        `[mcp-mysql] store reloaded externally -> active=${activeName || "-"} connections=${[...connections.keys()].join(",") || "(none)"}`,
       );
     });
   } catch (error) {
-    console.error("[mcp-mysql] no se pudo vigilar el almacén:", error.message);
+    console.error("[mcp-mysql] could not watch the store:", error.message);
   }
 }
 
@@ -148,7 +149,7 @@ function resolveConnectionName(solicitado) {
   const name = (solicitado || "").trim() || activeName;
   if (name && connections.has(name)) return name;
 
-  const available = [...connections.keys()].join(", ") || "(ninguno)";
+  const available = [...connections.keys()].join(", ") || "(none)";
   if (solicitado) {
     throw new Error(t("mcp.conn.notFound", { name: solicitado, available: available }));
   }
@@ -245,9 +246,9 @@ async function openConnectionForm({ prefill, name } = {}) {
       message:
         t("mcp.form.message"),
     };
-  } catch (excepcion) {
+  } catch (caught) {
     activeFormOpen = false;
-    throw excepcion;
+    throw caught;
   }
 }
 
@@ -294,23 +295,19 @@ async function activateConnection(requestedName, database) {
     creds.database = database.trim() || undefined;
     if (finalName !== "env") {
       try {
-        upsertConnection(finalName, creds, { activate: true });
-      } catch (excepcion) {
-        console.error("[mcp-mysql] no se pudo persistir la base de data:", excepcion.message);
+        // Persists the connection edit, but not the active selection: each window is independent.
+        upsertConnection(finalName, creds, { activate: false });
+      } catch (caught) {
+        console.error("[mcp-mysql] could not persist the database:", caught.message);
       }
     }
     connections.set(finalName, creds);
     closePool(finalName);
   }
 
+  // The selection lives in this process only; the file keeps the default for new windows.
   activeName = finalName;
-  if (finalName !== "env") {
-    try {
-      setActiveConnection(finalName);
-    } catch {
-      // If the store fails, keep the change in memory.
-    }
-  }
+  sessionChose = true;
 
   const data = connections.get(finalName);
   const result = {
@@ -1047,12 +1044,12 @@ export async function startServer() {
   const transporte = new StdioServerTransport();
   await server.connect(transporte);
   console.error(
-    `[mcp-mysql] listo -> connections=${[...connections.keys()].join(",") || "(ninguna)"} active=${activeName || "-"} escritura=${CONFIG.writeEnabled ? "on" : "off"}`,
+    `[mcp-mysql] ready -> connections=${[...connections.keys()].join(",") || "(none)"} active=${activeName || "-"} writes=${CONFIG.writeEnabled ? "on" : "off"}`,
   );
 
   if (!connections.size && bool(process.env.MYSQL_PROMPT_ON_START, true)) {
     const result = await openConnectionForm();
-    console.error("[mcp-mysql] sin connections:", result.url || result.message);
+    console.error("[mcp-mysql] no connections:", result.url || result.message);
   }
 }
 

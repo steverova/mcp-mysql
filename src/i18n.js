@@ -12,7 +12,7 @@ import en from "./locales/en.json" with { type: "json" };
 
 const DICTIONARIES = { es, en };
 
-function detectar() {
+function detectLanguage() {
   const forzado = (process.env.MCP_MYSQL_LANG || "").trim().toLowerCase();
   if (forzado === "es" || forzado === "en") return forzado;
 
@@ -40,7 +40,7 @@ function detectar() {
   return "en";
 }
 
-export const LANGUAGE = detectar();
+export const LANGUAGE = detectLanguage();
 export const currentLanguage = () => LANGUAGE;
 
 /**
@@ -50,9 +50,9 @@ export const currentLanguage = () => LANGUAGE;
  */
 export function t(key, params = {}) {
   const dictionary = DICTIONARIES[LANGUAGE] || DICTIONARIES.en;
-  const texto = dictionary[key] ?? DICTIONARIES.es[key] ?? key;
+  const text = dictionary[key] ?? DICTIONARIES.es[key] ?? key;
 
-  return String(texto).replace(/\{(\w+)\}/g, (coincidencia, name) =>
+  return String(text).replace(/\{(\w+)\}/g, (coincidencia, name) =>
     params[name] !== undefined ? String(params[name]) : coincidencia,
   );
 }

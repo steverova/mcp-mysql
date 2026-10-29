@@ -14,9 +14,9 @@ export async function runForm() {
 const store = loadStore();
 const existingNames = Object.keys(store.connections);
 
-let alGuardar;
+let onSaved;
 const wait = new Promise((resolve) => {
-  alGuardar = resolve;
+  onSaved = resolve;
 });
 
 console.log(`${t("form.file")}: ${storePath()}`);
@@ -26,7 +26,7 @@ console.log("");
 const form = await openForm({
   connections: existingNames,
   prefill: { name: process.env.MCP_MYSQL_DEFAULT_NAME || store.active || "" },
-  onDone: (result) => alGuardar(result),
+  onDone: (result) => onSaved(result),
 });
 
 console.log(`${t("form.url")}: ${form.url}`);

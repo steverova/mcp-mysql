@@ -20,10 +20,10 @@ import { t } from "../src/i18n.js";
 
 const version = paquete.version;
 
-const color = (codigo, texto) => (process.stdout.isTTY ? `\x1b[${codigo}m${texto}\x1b[0m` : texto);
-const title = (texto) => color("1;36", texto);
-const dim = (texto) => color("90", texto);
-const mal = (texto) => color("31", texto);
+const color = (code, text) => (process.stdout.isTTY ? `\x1b[${code}m${text}\x1b[0m` : text);
+const title = (text) => color("1;36", text);
+const dim = (text) => color("90", text);
+const mal = (text) => color("31", text);
 
 const HELP = `
 ${title("mysql-mcp")} ${dim("v" + version)} — ${t("bin.tagline")}

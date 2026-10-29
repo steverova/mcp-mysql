@@ -149,16 +149,16 @@ export function openForm({ prefill = {}, connections = [], onDone, timeoutMs = 6
   const readBody = (req) =>
     new Promise((resolve, reject) => {
       let body = "";
-      req.on("data", (trozo) => {
-        body += trozo;
+      req.on("data", (chunk) => {
+        body += chunk;
         if (body.length > 64 * 1024) reject(new Error(t("webform.bodyTooLarge")));
       });
       req.on("end", () => resolve(body));
       req.on("error", reject);
     });
 
-  const responder = (res, codigo, html) => {
-    res.writeHead(codigo, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  const responder = (res, code, html) => {
+    res.writeHead(code, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
     res.end(html);
   };
 

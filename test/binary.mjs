@@ -1,5 +1,5 @@
 /**
- * Prueba el binario compilado: CLI y serverInfo MCP.
+ * Tests the compiled binary: CLI and MCP server.
  *
  *   node test/binary.mjs dist/mysql-mcp-windows-x64.exe
  */
@@ -14,47 +14,47 @@ const binario = path.resolve(RAIZ, process.argv[2] || "dist/mysql-mcp-windows-x6
 
 let failures = 0;
 const check = (name, condicion, detalle = "") => {
-  console.log(`${condicion ? "OK   " : "FALLO"} ${name}${detalle ? " -> " + detalle : ""}`);
+  console.log(`${condicion ? "OK   " : "FAIL"} ${name}${detalle ? " -> " + detalle : ""}`);
   if (!condicion) failures++;
 };
 
 const run = (...args) => {
   const r = spawnSync(binario, args, { encoding: "utf8", timeout: 60000 });
-  return { codigo: r.status, salida: `${r.stdout || ""}${r.stderr || ""}`.trim() };
+  return { code: r.status, output: `${r.stdout || ""}${r.stderr || ""}`.trim() };
 };
 
 const version = run("version");
-check("el binario arranca", version.codigo === 0, version.salida.slice(0, 40));
-check("informa su versión", /^\d+\.\d+\.\d+$/.test(version.salida), version.salida);
+check("the binary starts", version.code === 0, version.output.slice(0, 40));
+check("reports its version", /^\d+\.\d+\.\d+$/.test(version.output), version.output);
 
 const help = run("help");
-check("help integrada", help.salida.includes("mysql-mcp") && help.salida.includes("doctor"));
+check("built-in help", help.output.includes("mysql-mcp") && help.output.includes("doctor"));
 
 const paths = run("path");
-check("conoce el file de connections", paths.salida.includes("connections.json"), paths.salida.split("\n")[0]);
+check("knows the connections file", paths.output.includes("connections.json"), paths.output.split("\n")[0]);
 
-// Servidor MCP dentro del binario.
+// MCP server inside the binary.
 const transporte = new StdioClientTransport({
   command: binario,
   args: ["start"],
-  env: { ...process.env, MCP_MYSQL_LANG: "es", MYSQL_USER: "", MYSQL_PROMPT_ON_START: "false", MCP_MYSQL_NO_BROWSER: "1" },
+  env: { ...process.env, MCP_MYSQL_LANG: "en", MYSQL_USER: "", MYSQL_PROMPT_ON_START: "false", MCP_MYSQL_NO_BROWSER: "1" },
 });
 
 const cliente = new Client({ name: "binary-test", version: "1.0.0" });
 await cliente.connect(transporte);
 
 const { tools } = await cliente.listTools();
-check("expone las 12 herramientas", tools.length === 12, tools.map((t) => t.name).join(", ").slice(0, 80));
+check("exposes the 12 tools", tools.length === 12, tools.map((t) => t.name).join(", ").slice(0, 80));
 
 const info = await cliente.callTool({ name: "connection_info", arguments: {} });
-const texto = (info.content || []).map((c) => c.text).join("\n");
-check("responde connection_info", !info.isError && /"connections"|"available"/.test(texto), texto.replace(/\s+/g, " ").slice(0, 80));
+const text = (info.content || []).map((c) => c.text).join("\n");
+check("responds to connection_info", !info.isError && /"connections"|"available"/.test(text), text.replace(/\s+/g, " ").slice(0, 80));
 
 await cliente.close();
 
 console.log("");
 if (failures) {
-  console.error(`${failures} prueba(s) fallidas`);
+  console.error(`${failures} test(s) failed`);
   process.exit(1);
 }
-console.log("Todas las pruebas pasaron");
+console.log("All tests passed");

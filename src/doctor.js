@@ -16,14 +16,14 @@ import { t } from "./i18n.js";
 export async function runDoctor(args = process.argv.slice(2)) {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let envFile = null;
-for (const candidato of [
+for (const candidate of [
   path.join(ROOT, ".env"),
   path.join(process.cwd(), ".env"),
   path.join(path.dirname(process.execPath), ".env"),
 ]) {
   try {
-    process.loadEnvFile(candidato);
-    envFile = candidato;
+    process.loadEnvFile(candidate);
+    envFile = candidate;
     break;
   } catch {
     // Try the next candidate.
@@ -32,10 +32,10 @@ for (const candidato of [
 
 if (!envFile) console.log(t("doctor.noEnv"));
 
-const bool = (value, porDefecto) =>
-  value === undefined ? porDefecto : /^(1|true|yes|on)$/i.test(String(value));
+const bool = (value, defaultValue) =>
+  value === undefined ? defaultValue : /^(1|true|yes|on)$/i.test(String(value));
 
-const pedirTodas = args.includes("--all");
+const testAll = args.includes("--all");
 const nameIndex = args.indexOf("--name");
 const requestedName = nameIndex >= 0 ? args[nameIndex + 1] : undefined;
 
@@ -71,7 +71,7 @@ if (!connections.size) {
   process.exit(1);
 }
 
-const names = pedirTodas
+const names = testAll
   ? [...connections.keys()]
   : [requestedName || store.active || [...connections.keys()][0]];
 
