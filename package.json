@@ -1,6 +1,6 @@
 {
   "name": "mcp-mysql",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "description": "MySQL MCP server: multiple connections, cross-platform, two-step confirmed writes",
   "type": "module",
@@ -19,11 +19,13 @@
     "build": "node scripts/build.mjs",
     "build:all": "node scripts/build.mjs --all",
     "test": "node test/handshake.mjs",
+    "test:classify": "node test/classify.mjs",
     "test:store": "node test/store.mjs",
     "test:form": "node test/webform.mjs",
     "test:reload": "node test/reload.mjs",
     "test:opencode": "node test/opencode.mjs",
-    "test:all": "node test/handshake.mjs && node test/store.mjs && node test/webform.mjs && node test/reload.mjs && node test/opencode.mjs"
+    "test:live": "node test/live.mjs",
+    "test:all": "node test/classify.mjs && node test/handshake.mjs && node test/store.mjs && node test/webform.mjs && node test/reload.mjs && node test/opencode.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

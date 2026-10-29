@@ -33,6 +33,13 @@ import {
 import { openForm } from "./webform.js";
 import { isEntryPoint } from "./cli-util.js";
 import { t } from "./i18n.js";
+import {
+  maskLiterals,
+  normalizeSql,
+  quoteIdentifier,
+  splitStatements,
+  stripComments,
+} from "./sqltext.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 for (const file of [
@@ -58,6 +65,7 @@ const CONFIG = {
   writeEnabled: bool(process.env.MYSQL_WRITE_ENABLED, true),
   confirmTtl: Math.max(10, Number(process.env.MYSQL_CONFIRM_TTL_SECONDS || 300)),
   connectTimeout: Math.max(1000, Number(process.env.MYSQL_CONNECT_TIMEOUT_MS || 10000)),
+  maxScriptStatements: Math.max(1, Number(process.env.MYSQL_MAX_SCRIPT_STATEMENTS || 100)),
 };
 
 /** ------------------------------------------------------------------ */
@@ -377,13 +385,6 @@ function sanitize(value, depth = 0) {
   return value;
 }
 
-function stripComments(sql) {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/(^|\s)--[^\n]*/g, "$1 ")
-    .replace(/(^|\s)#[^\n]*/g, "$1 ");
-}
-
 const READ_FIRST = new Set(["select", "show", "describe", "desc", "explain"]);
 const WRITE_FIRST = new Set([
   "insert",
@@ -395,26 +396,88 @@ const WRITE_FIRST = new Set([
   "drop",
   "truncate",
   "rename",
+  "call",
 ]);
 
 const SNEAKY_WRITE =
   /\b(into\s+(out|dump)file|for\s+update|lock\s+in\s+share\s+mode|\binsert\b|\bupdate\b|\bdelete\b|\breplace\b|\bcreate\b|\balter\b|\bdrop\b|\btruncate\b|\brename\b|\bgrant\b|\brevoke\b|\bcall\b|\bload\s+data\b)\b/i;
 
+/**
+ * Cabecera de una rutina almacenada (procedimiento, función, trigger o evento).
+ * Admite `DEFINER = ...` y `OR REPLACE`, igual que el servidor.
+ */
+const ROUTINE_HEAD =
+  /^create\s+(?:or\s+replace\s+)?(?:definer\s*=\s*(?:current_user(?:\(\))?|(?:`[^`]*`|'[^']*'|[\w$.-]+)@(?:`[^`]*`|'[^']*'|[\w$.-]+))\s+)?(procedure|function|trigger|event)\b/i;
+
+/**
+ * ¿Es UNA sola definición de rutina con cuerpo `BEGIN ... END`?
+ *
+ * El cuerpo necesita `;` internos, así que estas sentencias se eximen del
+ * chequeo de "una sentencia por llamada". Se exige que:
+ *  - empiece por `CREATE [DEFINER=...] PROCEDURE|FUNCTION|TRIGGER|EVENT`;
+ *  - si tiene `BEGIN`, cierre con `END` (con etiqueta opcional) y **nada**
+ *    más después: un `... END; DROP TABLE x` no pasa.
+ *
+ * Los literales se enmascaran antes de mirar palabras clave, así que un
+ * `SET x = 'BEGIN'` o un `SELECT 'a;b'` no confunden al detector.
+ *
+ * La conexión usa `multipleStatements: false`, así que aunque se colara algo
+ * detrás del `END`, el servidor rechaza el segundo statement.
+ */
+export function isRoutineDefinition(sql) {
+  const cleaned = maskLiterals(stripComments(sql)).trim().replace(/;+\s*$/, "");
+  const body = cleaned.replace(/;+\s*$/, "").trim();
+  if (!ROUTINE_HEAD.test(body)) return false;
+
+  if (!/\bbegin\b/i.test(body)) {
+    // Cuerpo de una sola sentencia (`CREATE PROCEDURE p() SELECT 1`): no debe
+    // tener `;` internos (si los tiene, es otra cosa).
+    return !body.includes(";");
+  }
+
+  // Debe terminar en END (opcionalmente con la etiqueta del bloque).
+  return /(?:^|[\s;])end\s*(?:[A-Za-z_]\w*)?$/i.test(body);
+}
+
+/**
+ * Columnas de una tabla/vista que se pueden pedir con `SHOW CREATE ...`.
+ * Se valida contra esta lista: el nombre de tipo nunca llega al SQL.
+ */
+const SHOW_CREATE = {
+  table: "TABLE",
+  view: "VIEW",
+  procedure: "PROCEDURE",
+  function: "FUNCTION",
+  trigger: "TRIGGER",
+  event: "EVENT",
+};
+
 /** "read" | "write", o lanza UserError. */
-function classify(rawSql) {
+export function classify(rawSql) {
   if (typeof rawSql !== "string" || !rawSql.trim()) {
     throw new UserError(t("mcp.sql.empty"));
   }
-  const cleaned = stripComments(rawSql).trim().replace(/;+\s*$/, "");
+
+  const cleaned = stripComments(rawSql).trim();
   if (!cleaned) throw new UserError(t("mcp.sql.empty"));
-  if (cleaned.includes(";")) {
-    throw new UserError(t("mcp.sql.oneStatement"));
+
+  // Las rutinas almacenadas llevan `;` dentro del cuerpo BEGIN...END.
+  const routineHead = ROUTINE_HEAD.test(maskLiterals(cleaned));
+  if (routineHead) {
+    if (!isRoutineDefinition(cleaned)) throw new UserError(t("mcp.sql.routineUnclosed"));
+    return "write";
   }
 
-  const first = (cleaned.match(/^[a-z]+/i)?.[0] || "").toLowerCase();
+  // Los `;` de dentro de un literal no cuentan como sentencias.
+  const statements = splitStatements(cleaned);
+  if (statements.length > 1) throw new UserError(t("mcp.sql.oneStatement"));
+
+  const single = statements[0] || "";
+  const first = (single.match(/^[a-z]+/i)?.[0] || "").toLowerCase();
+  const masked = maskLiterals(single);
 
   if (READ_FIRST.has(first)) {
-    if (first !== "show" && first !== "describe" && first !== "desc" && SNEAKY_WRITE.test(cleaned)) {
+    if (first !== "show" && first !== "describe" && first !== "desc" && SNEAKY_WRITE.test(masked)) {
       throw new UserError(
         t("mcp.sql.sneakyWrite"),
       );
@@ -423,7 +486,7 @@ function classify(rawSql) {
   }
 
   if (first === "with") {
-    return /\b(insert|update|delete|replace)\b/i.test(cleaned) ? "write" : "read";
+    return /\b(insert|update|delete|replace)\b/i.test(masked) ? "write" : "read";
   }
 
   if (WRITE_FIRST.has(first)) return "write";
@@ -433,7 +496,7 @@ function classify(rawSql) {
   );
 }
 
-const normalizar = (sql) => stripComments(sql).trim().replace(/;+\s*$/, "").replace(/\s+/g, " ");
+const normalizar = (sql) => normalizeSql(sql);
 const hashOf = (sql) => crypto.createHash("sha256").update(normalizar(sql)).digest("hex");
 const isUpdateWithoutWhere = (sql) =>
   /^(update|delete)\b/i.test(normalizar(sql)) && !/\bwhere\b/i.test(normalizar(sql));
@@ -457,6 +520,7 @@ function purgeTokens() {
 
 async function runRead(sql, connection, limit) {
   const conn = await getPool(connection).getConnection();
+  const startedAt = process.hrtime.bigint();
   try {
     await conn.query("START TRANSACTION READ ONLY");
     let result;
@@ -467,8 +531,9 @@ async function runRead(sql, connection, limit) {
       await conn.query("ROLLBACK").catch(() => {});
     }
 
+    const durationMs = Math.round(Number(process.hrtime.bigint() - startedAt) / 1e5) / 10;
     const { rows, fields } = result;
-    if (!Array.isArray(rows)) return { type: "result", ...sanitize(rows) };
+    if (!Array.isArray(rows)) return { type: "result", durationMs, ...sanitize(rows) };
 
     const columns = (fields || []).map((field) => field.name);
     const truncated = rows.length > limit;
@@ -478,6 +543,7 @@ async function runRead(sql, connection, limit) {
       rows: limitedRows.length,
       columns,
       truncated,
+      durationMs,
       ...(truncated
         ? { warning: t("mcp.rowsLimited", { limit }) }
         : {}),
@@ -490,6 +556,9 @@ async function runRead(sql, connection, limit) {
 
 async function estimateImpact(sql, connection) {
   const type = (normalizar(sql).match(/^[a-z]+/i)?.[0] || "").toLowerCase();
+  if (type === "call") {
+    return { estimacion: t("mcp.estimate.notApplicable"), nota: t("mcp.estimate.call") };
+  }
   if (!["update", "delete", "insert", "replace"].includes(type)) {
     return { estimacion: t("mcp.estimate.notApplicable"), nota: t("mcp.estimate.ddl") };
   }
@@ -526,11 +595,128 @@ async function runWrite(sql, connection) {
 }
 
 /** ------------------------------------------------------------------ */
+// Introspection helpers (databases, views, routines, indexes, DDL)
+/** ------------------------------------------------------------------ */
+
+const SYSTEM_SCHEMAS = new Set(["mysql", "information_schema", "performance_schema", "sys"]);
+
+/** Escapa un término para usarlo dentro de un LIKE con parámetros. */
+const likeTerm = (term) => `%${String(term).replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+
+/**
+ * Lee las claves candidatas de una fila de `SHOW CREATE ...` y devuelve el DDL.
+ * MySQL nombra la columna distinto en cada objeto ("Create Table", "Create View",
+ * "SQL Original Statement"...), así que se busca en vez de fijarla.
+ */
+function pickDdl(row) {
+  if (!row) return null;
+  const key = Object.keys(row).find((name) => /^(create|sql original)/i.test(name));
+  return key ? row[key] : null;
+}
+
+/** Convierte el resultado de un EXPLAIN en avisos legibles. */
+function explainHints(rows) {
+  if (!Array.isArray(rows)) return [];
+  const hints = [];
+  for (const row of rows) {
+    const table = row.table ?? "?";
+    const access = String(row.type ?? "").toLowerCase();
+    const extra = String(row.Extra ?? "");
+    const estimated = Number(row.rows ?? 0);
+
+    if (access === "all") hints.push(t("mcp.explain.fullScan", { table }));
+    else if (access === "index") hints.push(t("mcp.explain.indexScan", { table }));
+    if (!row.key && ["all", "index", "range", "ref_or_null"].includes(access)) {
+      hints.push(t("mcp.explain.noKey", { table }));
+    }
+    if (/using filesort/i.test(extra)) hints.push(t("mcp.explain.filesort", { table }));
+    if (/using temporary/i.test(extra)) hints.push(t("mcp.explain.temporary", { table }));
+    if (estimated > 10000) hints.push(t("mcp.explain.manyRows", { table, rows: estimated }));
+    if (/using join buffer/i.test(extra)) hints.push(t("mcp.explain.joinBuffer", { table }));
+  }
+  return hints;
+}
+
+/** Esquema destino: el pedido o el de la conexión. */
+function targetSchema(name, schema) {
+  const target = schema || connections.get(name)?.database;
+  if (!target) throw new UserError(t("mcp.noSchema"));
+  return target;
+}
+
+/** SHOW CREATE de un objeto del esquema, con el tipo validado por lista blanca. */
+async function readCreate(name, type, schema, objectName) {
+  const keyword = SHOW_CREATE[type];
+  if (!keyword) throw new UserError(t("mcp.showCreate.badType", { types: Object.keys(SHOW_CREATE).join(", ") }));
+
+  const [rows] = await getPool(name).query(
+    `SHOW CREATE ${keyword} ${quoteIdentifier(schema)}.${quoteIdentifier(objectName)}`,
+  );
+  const ddl = pickDdl(rows?.[0]);
+  if (!ddl) throw new UserError(t("mcp.showCreate.missing", { type, name: objectName, schema }));
+  return ddl;
+}
+
+/** Códigos en los que el "hint" de conexión aporta algo. */
+const NETWORK_CODES = new Set([
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EHOSTUNREACH",
+  "ER_ACCESS_DENIED_ERROR",
+  "ER_BAD_DB_ERROR",
+  "ER_NOT_SUPPORTED_AUTH_MODE",
+]);
+
+/**
+ * Valida una sentencia SIN ejecutarla: `SET @var` + `PREPARE` + `DEALLOCATE`.
+ *
+ * PREPARE resuelve sintaxis, tablas, columnas y permisos; no modifica datos.
+ * Todo va en la misma conexión del pool porque PREPARE es de sesión.
+ * Las rutinas (CREATE PROCEDURE/FUNCTION/TRIGGER/EVENT) no son "preparables"
+ * y devuelven ER_UNSUPPORTED_PS: eso no es un error de la sentencia.
+ */
+async function prepareOnly(sql, connection) {
+  const conn = await getPool(connection).getConnection();
+  let prepared = false;
+  try {
+    await conn.query("SET @mcp_validate_sql = ?", [sql]);
+    await conn.query("PREPARE mcp_validate_stmt FROM @mcp_validate_sql");
+    prepared = true;
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      code: error?.code || null,
+      error: formatError(error),
+      hint: NETWORK_CODES.has(error?.code) ? errorHint(error) : null,
+    };
+  } finally {
+    if (prepared) await conn.query("DEALLOCATE PREPARE mcp_validate_stmt").catch(() => {});
+    await conn.query("SET @mcp_validate_sql = NULL").catch(() => {});
+    conn.release();
+  }
+}
+
+/**
+ * EXPLAIN sin ejecutar y sin `READ ONLY`: MySQL rechaza `EXPLAIN UPDATE/DELETE`
+ * dentro de una transacción de solo lectura (ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION).
+ * EXPLAIN no modifica datos, así que aquí no hace falta transacción.
+ */
+async function explainOnly(sql, connection, limit = 200) {
+  const [rows, fields] = await getPool(connection).query("EXPLAIN " + sql);
+  return {
+    columns: (fields || []).map((field) => field.name),
+    data: Array.isArray(rows) ? sanitize(rows.slice(0, limit)) : [],
+  };
+}
+
+/** ------------------------------------------------------------------ */
 // Server
 /** ------------------------------------------------------------------ */
 
 const server = new McpServer(
-  { name: "mysql", version: "2.0.0" },
+  { name: "mysql", version: "2.5.0" },
   {
     instructions: t("mcp.instructions"),
   },
@@ -798,10 +984,11 @@ server.registerTool(
       t("mcp.tool.list_tables.description"),
     inputSchema: {
       schema: z.string().optional().describe(t("mcp.param.schema")),
+      type: z.enum(["all", "table", "view"]).optional().describe(t("mcp.param.tableType")),
       connection: z.string().optional().describe(t("mcp.param.connection")),
     },
   },
-  wrap(async ({ schema, connection }) => {
+  wrap(async ({ schema, type, connection }) => {
     requireConfirmation(connection);
     const { name, creds } = (() => {
       const n = resolveConnectionName(connection);
@@ -815,6 +1002,8 @@ server.registerTool(
       filter = " AND table_schema = ?";
       params.push(target);
     }
+    if (type === "table") filter += " AND table_type = 'BASE TABLE'";
+    else if (type === "view") filter += " AND table_type = 'VIEW'";
 
     const [rows] = await getPool(name).query(
       `SELECT table_schema AS dbSchema, table_name AS dbTable, table_type AS dbType,
@@ -828,6 +1017,7 @@ server.registerTool(
       connection: name,
       total: rows.length,
       schema: target || t("mcp.allSchemas"),
+      type: type || "all",
       tables: sanitize(rows),
     });
   }),
@@ -889,6 +1079,522 @@ server.registerTool(
       indexes: sanitize(indexes),
       foreignKeys: sanitize(foreignKeys),
     });
+  }),
+);
+
+server.registerTool(
+  "list_databases",
+  {
+    title: t("mcp.tool.list_databases.title"),
+    description: t("mcp.tool.list_databases.description"),
+    inputSchema: {
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const [rows] = await getPool(name).query(
+      `SELECT schema_name AS dbName, default_character_set_name AS charSet,
+              default_collation_name AS collation
+         FROM information_schema.schemata
+        ORDER BY schema_name`,
+    );
+    return text({
+      connection: name,
+      total: rows.length,
+      current: connections.get(name)?.database || null,
+      databases: sanitize(rows).map((row) => ({ ...row, system: SYSTEM_SCHEMAS.has(row.dbName) })),
+    });
+  }),
+);
+
+server.registerTool(
+  "search_schema",
+  {
+    title: t("mcp.tool.search_schema.title"),
+    description: t("mcp.tool.search_schema.description"),
+    inputSchema: {
+      term: z.string().min(1).describe(t("mcp.param.term")),
+      schema: z.string().optional().describe(t("mcp.param.schema")),
+      limit: z.number().int().positive().max(500).optional().describe(t("mcp.param.limit")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ term, schema, limit, connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const pattern = likeTerm(term);
+    const max = limit || 50;
+    const filter = schema ? " AND table_schema = ?" : "";
+    const args = schema ? [pattern, schema] : [pattern];
+    const pool = getPool(name);
+
+    const [tables] = await pool.query(
+      `SELECT table_schema AS dbSchema, table_name AS name, table_type AS kind
+         FROM information_schema.tables
+        WHERE table_name LIKE ?${filter}
+        ORDER BY table_schema, table_name
+        LIMIT ${max}`,
+      args,
+    );
+
+    const [columns] = await pool.query(
+      `SELECT table_schema AS dbSchema, table_name AS dbTable, column_name AS name, column_type AS dbType
+         FROM information_schema.columns
+        WHERE column_name LIKE ?${filter}
+        ORDER BY table_schema, table_name, ordinal_position
+        LIMIT ${max}`,
+      args,
+    );
+
+    const routineFilter = schema ? " AND routine_schema = ?" : "";
+    const [routines] = await pool.query(
+      `SELECT routine_schema AS dbSchema, routine_name AS name, routine_type AS kind
+         FROM information_schema.routines
+        WHERE routine_name LIKE ?${routineFilter}
+        ORDER BY routine_schema, routine_name
+        LIMIT ${max}`,
+      args,
+    );
+
+    const triggerFilter = schema ? " AND trigger_schema = ?" : "";
+    const [triggers] = await pool.query(
+      `SELECT trigger_schema AS dbSchema, trigger_name AS name, event_object_table AS dbTable,
+              action_timing AS timing, event_manipulation AS eventName
+         FROM information_schema.triggers
+        WHERE trigger_name LIKE ?${triggerFilter}
+        ORDER BY trigger_schema, trigger_name
+        LIMIT ${max}`,
+      args,
+    );
+
+    return text({
+      connection: name,
+      term,
+      schema: schema || t("mcp.allSchemas"),
+      total: tables.length + columns.length + routines.length + triggers.length,
+      tables: sanitize(tables),
+      columns: sanitize(columns),
+      routines: sanitize(routines),
+      triggers: sanitize(triggers),
+    });
+  }),
+);
+
+server.registerTool(
+  "list_routines",
+  {
+    title: t("mcp.tool.list_routines.title"),
+    description: t("mcp.tool.list_routines.description"),
+    inputSchema: {
+      type: z
+        .enum(["all", "procedure", "function", "trigger", "event"])
+        .optional()
+        .describe(t("mcp.param.routineType")),
+      schema: z.string().optional().describe(t("mcp.param.schema")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ type, schema, connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const kind = type || "all";
+    const pool = getPool(name);
+    const model = schema || connections.get(name)?.database || undefined;
+    const result = { connection: name, type: kind, schema: model || t("mcp.allSchemas") };
+
+    if (kind === "all" || kind === "procedure" || kind === "function") {
+      const filter = model ? " AND routine_schema = ?" : "";
+      const args = model ? [model] : [];
+      const typeFilter =
+        kind === "procedure" ? " AND routine_type = 'PROCEDURE'" : kind === "function" ? " AND routine_type = 'FUNCTION'" : "";
+      const [rows] = await pool.query(
+        `SELECT routine_schema AS dbSchema, routine_name AS name, routine_type AS kind,
+                definer, created, last_altered AS lastAltered, security_type AS securityType,
+                is_deterministic AS isDeterministic, sql_data_access AS dataAccess,
+                routine_comment AS routineComment
+           FROM information_schema.routines
+          WHERE routine_schema NOT IN ('mysql','information_schema','performance_schema','sys')${filter}${typeFilter}
+          ORDER BY routine_schema, routine_type, routine_name`,
+        args,
+      );
+      result.routines = sanitize(rows);
+      result.routinesTotal = rows.length;
+    }
+
+    if (kind === "all" || kind === "trigger") {
+      const filter = model ? " AND trigger_schema = ?" : "";
+      const args = model ? [model] : [];
+      const [rows] = await pool.query(
+        `SELECT trigger_schema AS dbSchema, trigger_name AS name, event_object_table AS dbTable,
+                action_timing AS timing, event_manipulation AS eventName, definer, created
+           FROM information_schema.triggers
+          WHERE trigger_schema NOT IN ('mysql','information_schema','performance_schema','sys')${filter}
+          ORDER BY trigger_schema, trigger_name`,
+        args,
+      );
+      result.triggers = sanitize(rows);
+      result.triggersTotal = rows.length;
+    }
+
+    if (kind === "all" || kind === "event") {
+      const filter = model ? " AND event_schema = ?" : "";
+      const args = model ? [model] : [];
+      const [rows] = await pool.query(
+        `SELECT event_schema AS dbSchema, event_name AS name, status, event_type AS kind,
+                interval_value AS everyValue, interval_field AS everyField, definer,
+                last_executed AS lastExecuted
+           FROM information_schema.events
+          WHERE event_schema NOT IN ('mysql','information_schema','performance_schema','sys')${filter}
+          ORDER BY event_schema, event_name`,
+        args,
+      );
+      result.events = sanitize(rows);
+      result.eventsTotal = rows.length;
+    }
+
+    return text(result);
+  }),
+);
+
+server.registerTool(
+  "show_create",
+  {
+    title: t("mcp.tool.show_create.title"),
+    description: t("mcp.tool.show_create.description"),
+    inputSchema: {
+      type: z
+        .enum(["table", "view", "procedure", "function", "trigger", "event"])
+        .describe(t("mcp.param.objectType")),
+      name: z.string().min(1).describe(t("mcp.param.objectName")),
+      schema: z.string().optional().describe(t("mcp.param.schema")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ type, name: objectName, schema, connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const target = targetSchema(name, schema);
+    const ddl = await readCreate(name, type, target, objectName);
+    return text({
+      connection: name,
+      [`${type}`]: `${target}.${objectName}`,
+      ddl,
+      runnable: /begin/i.test(ddl) ? t("mcp.showCreate.runnableNote") : t("mcp.showCreate.directNote"),
+    });
+  }),
+);
+
+server.registerTool(
+  "export_schema",
+  {
+    title: t("mcp.tool.export_schema.title"),
+    description: t("mcp.tool.export_schema.description"),
+    inputSchema: {
+      schema: z.string().optional().describe(t("mcp.param.schema")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ schema, connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const target = targetSchema(name, schema);
+    const pool = getPool(name);
+    const MAX_OBJECTS = 500;
+
+    const [tables] = await pool.query(
+      `SELECT table_name AS name, table_type AS kind
+         FROM information_schema.tables
+        WHERE table_schema = ?
+        ORDER BY table_type, table_name`,
+      [target],
+    );
+    const [routines] = await pool.query(
+      `SELECT routine_name AS name, routine_type AS kind
+         FROM information_schema.routines
+        WHERE routine_schema = ?
+        ORDER BY routine_type, routine_name`,
+      [target],
+    );
+    const [triggers] = await pool.query(
+      `SELECT trigger_name AS name FROM information_schema.triggers WHERE trigger_schema = ? ORDER BY trigger_name`,
+      [target],
+    );
+    const [events] = await pool.query(
+      `SELECT event_name AS name FROM information_schema.events WHERE event_schema = ? ORDER BY event_name`,
+      [target],
+    );
+
+    const objects =
+      tables.length + routines.length + triggers.length + events.length;
+    const truncated = objects > MAX_OBJECTS;
+    const sliced = {
+      tables: tables.slice(0, MAX_OBJECTS),
+      routines: routines.slice(0, MAX_OBJECTS),
+      triggers: triggers.slice(0, MAX_OBJECTS),
+      events: events.slice(0, MAX_OBJECTS),
+    };
+
+    const parts = [`-- ${target}`, `CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(target)};`, `USE ${quoteIdentifier(target)};`, ""];
+
+    for (const item of sliced.tables) {
+      const ddl = await readCreate(name, item.kind === "VIEW" ? "view" : "table", target, item.name);
+      parts.push(`DROP ${item.kind === "VIEW" ? "VIEW" : "TABLE"} IF EXISTS ${quoteIdentifier(item.name)};`, `${ddl};`, "");
+    }
+
+    for (const item of sliced.routines) {
+      const ddl = await readCreate(name, item.kind === "FUNCTION" ? "function" : "procedure", target, item.name);
+      parts.push("DELIMITER ;;", `${ddl};;`, "DELIMITER ;", "");
+    }
+    for (const item of sliced.triggers) {
+      const ddl = await readCreate(name, "trigger", target, item.name);
+      parts.push("DELIMITER ;;", `${ddl};;`, "DELIMITER ;", "");
+    }
+    for (const item of sliced.events) {
+      const ddl = await readCreate(name, "event", target, item.name);
+      parts.push("DELIMITER ;;", `${ddl};;`, "DELIMITER ;", "");
+    }
+
+    return text({
+      connection: name,
+      schema: target,
+      objects: {
+        tables: sliced.tables.filter((item) => item.kind !== "VIEW").length,
+        views: sliced.tables.filter((item) => item.kind === "VIEW").length,
+        routines: sliced.routines.length,
+        triggers: sliced.triggers.length,
+        events: sliced.events.length,
+      },
+      truncated,
+      ...(truncated ? { warning: t("mcp.exportSchema.truncated", { max: MAX_OBJECTS }) } : {}),
+      ddl: parts.join("\n"),
+    });
+  }),
+);
+
+server.registerTool(
+  "explain_query",
+  {
+    title: t("mcp.tool.explain_query.title"),
+    description: t("mcp.tool.explain_query.description"),
+    inputSchema: {
+      sql: z.string().describe(t("mcp.param.sqlRead")),
+      analyze: z.boolean().optional().describe(t("mcp.param.analyze")),
+      format: z.enum(["traditional", "json", "tree"]).optional().describe(t("mcp.param.explainFormat")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ sql, analyze, format, connection }) => {
+    if (classify(sql) !== "read") {
+      throw new UserError(t("mcp.explain.readOnly"));
+    }
+    if (analyze && !/^select\b/i.test(normalizar(sql))) {
+      throw new UserError(t("mcp.explain.analyzeSelect"));
+    }
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+
+    const statement = normalizar(sql);
+    const prefix = analyze
+      ? "EXPLAIN ANALYZE "
+      : format === "json"
+        ? "EXPLAIN FORMAT=JSON "
+        : format === "tree"
+          ? "EXPLAIN FORMAT=TREE "
+          : "EXPLAIN ";
+
+    const result = await runRead(prefix + statement, name, 500);
+    return text({
+      connection: name,
+      statement,
+      mode: analyze ? "analyze" : `explain${format && format !== "traditional" ? ":" + format : ""}`,
+      hints: explainHints(result.data),
+      ...result,
+    });
+  }),
+);
+
+server.registerTool(
+  "propose_script",
+  {
+    title: t("mcp.tool.propose_script.title"),
+    description: t("mcp.tool.propose_script.description"),
+    inputSchema: {
+      script: z.string().describe(t("mcp.param.script")),
+      reason: z.string().optional().describe(t("mcp.param.reason")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ script, reason, connection }) => {
+    if (!CONFIG.writeEnabled) throw new UserError(t("mcp.writeDisabled"));
+
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const statements = splitStatements(script);
+    if (!statements.length) throw new UserError(t("mcp.script.empty"));
+    if (statements.length > CONFIG.maxScriptStatements) {
+      throw new UserError(t("mcp.script.tooMany", { max: CONFIG.maxScriptStatements, total: statements.length }));
+    }
+
+    const plan = statements.map((statement, index) => {
+      const kind = classify(statement); // lanza con el error de clasificación
+      if (kind !== "write") {
+        throw new UserError(
+          t("mcp.script.notWrite", { index: index + 1, statement: normalizar(statement).slice(0, 120) }),
+        );
+      }
+      return {
+        index: index + 1,
+        statement: normalizar(statement),
+        fullTable: isUpdateWithoutWhere(statement),
+        destructive: /^(drop|truncate)\b/i.test(normalizar(statement)),
+        call: /^call\b/i.test(normalizar(statement)),
+      };
+    });
+
+    purgeTokens();
+    const token = crypto.randomUUID();
+    pendingTokens.set(token, {
+      hash: hashOf(script),
+      statement: plan.map((item) => item.statement).join(";\n"),
+      connection: name,
+      reason: reason || null,
+      statements: plan.length,
+      fullTable: plan.some((item) => item.fullTable),
+      expiraEn: Date.now() + CONFIG.confirmTtl * 1000,
+    });
+
+    const warnings = [t("mcp.script.noRollback")];
+    if (plan.some((item) => item.fullTable)) warnings.push(t("mcp.warn.fullTable"));
+    if (plan.some((item) => item.destructive)) warnings.push(t("mcp.warn.destructive"));
+    if (plan.some((item) => item.call)) warnings.push(t("mcp.warn.call"));
+
+    return text({
+      status: t("mcp.state.pending"),
+      connection: name,
+      target: describeConnection(connections.get(name)),
+      statements: plan.length,
+      plan,
+      reason: reason || null,
+      warnings,
+      token,
+      validForSeconds: CONFIG.confirmTtl,
+      nextStep: t("mcp.script.nextShow"),
+    });
+  }),
+);
+
+server.registerTool(
+  "confirm_script",
+  {
+    title: t("mcp.tool.confirm_script.title"),
+    description: t("mcp.tool.confirm_script.description"),
+    inputSchema: {
+      script: z.string().describe(t("mcp.param.scriptConfirm")),
+      token: z.string().describe(t("mcp.param.token")),
+      allow_full_table: z.boolean().optional().describe(t("mcp.param.allowFullTable")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ script, token, allow_full_table, connection }) => {
+    if (!CONFIG.writeEnabled) throw new UserError(t("mcp.writeDisabled"));
+
+    purgeTokens();
+    const pendingToken = pendingTokens.get(token);
+    if (!pendingToken) throw new UserError(t("mcp.tokenInvalid"));
+    if (pendingToken.hash !== hashOf(script)) throw new UserError(t("mcp.statementMismatch"));
+    if (connection && connection !== pendingToken.connection) {
+      throw new UserError(
+        t("mcp.connectionMismatch", { propuesta: pendingToken.connection, pedida: connection }),
+      );
+    }
+    if (pendingToken.fullTable && allow_full_table !== true) {
+      throw new UserError(t("mcp.fullTable"));
+    }
+
+    pendingTokens.delete(token);
+    const statements = splitStatements(script);
+    const results = [];
+    let failedAt = null;
+
+    for (const [index, statement] of statements.entries()) {
+      try {
+        const result = await runWrite(statement, pendingToken.connection);
+        results.push({ index: index + 1, statement: normalizar(statement), ok: true, result });
+      } catch (error) {
+        const message = formatError(error);
+        results.push({ index: index + 1, statement: normalizar(statement), ok: false, error: message });
+        failedAt = index + 1;
+        break;
+      }
+    }
+
+    return text({
+      status: failedAt ? t("mcp.script.failedStatus") : t("mcp.state.executed"),
+      connection: pendingToken.connection,
+      target: describeConnection(connections.get(pendingToken.connection) || {}),
+      statements: statements.length,
+      executed: results.filter((item) => item.ok).length,
+      failedAt,
+      results,
+      token_consumido: true,
+    });
+  }),
+);
+
+server.registerTool(
+  "validate_sql",
+  {
+    title: t("mcp.tool.validate_sql.title"),
+    description: t("mcp.tool.validate_sql.description"),
+    inputSchema: {
+      sql: z.string().describe(t("mcp.param.sqlValidate")),
+      connection: z.string().optional().describe(t("mcp.param.connection")),
+    },
+  },
+  wrap(async ({ sql, connection }) => {
+    requireConfirmation(connection);
+    const name = resolveConnectionName(connection);
+    const kind = classify(sql); // lanza si la sentencia no está permitida
+    const statement = normalizar(sql);
+    const base = {
+      connection: name,
+      kind,
+      statement,
+      executableWith: kind === "read" ? "query_read" : "propose_write",
+    };
+
+    const check = await prepareOnly(statement, name);
+
+    if (!check.ok) {
+      if (check.code === "ER_UNSUPPORTED_PS") {
+        return text({ ...base, valid: null, serverCheck: false, note: t("mcp.validate.notPreparable") });
+      }
+      return text({
+        ...base,
+        valid: false,
+        serverCheck: true,
+        error: check.error,
+        ...(check.hint ? { hint: check.hint } : {}),
+      });
+    }
+
+    const answer = { ...base, valid: true, serverCheck: true };
+
+    if (/^(select|with|update|delete|insert|replace)\b/i.test(statement)) {
+      // El plan no ejecuta nada: solo describe cómo lo haría el optimizador.
+      const plan = await explainOnly(statement, name, 200);
+      answer.hints = explainHints(plan.data);
+      answer.plan = plan.data;
+      answer.planColumns = plan.columns;
+      answer.note = t("mcp.validate.ok");
+    } else {
+      answer.note = t("mcp.validate.ddlNote");
+    }
+
+    if (kind === "write") answer.warning = t("mcp.validate.writeNotRun");
+    return text(answer);
   }),
 );
 
@@ -961,6 +1667,9 @@ server.registerTool(
     }
     if (/^(drop|truncate)\b/i.test(statement)) {
       warnings.push(t("mcp.warn.destructive"));
+    }
+    if (/^call\b/i.test(statement)) {
+      warnings.push(t("mcp.warn.call"));
     }
 
     return text({

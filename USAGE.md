@@ -193,6 +193,13 @@ It is asked once per process; restarting OpenCode asks again.
 | "add a new connection" | `save_connection` → browser |
 | "delete the old connection" | `remove_connection` (asks for confirmation) |
 | "show me the tables" | `list_tables` |
+| "show me the views" | `list_tables` with `type: "view"` |
+| "which databases are there?" | `list_databases` |
+| "where is the `invoice` column?" | `search_schema` |
+| "give me the DDL of customers" | `show_create` |
+| "dump the schema so I can commit it" | `export_schema` |
+| "list the stored procedures" | `list_routines` |
+| "why is this query slow?" | `explain_query` |
 | "describe customers" | `describe_table` |
 | "how many customers are there?" | `query_read` |
 
@@ -227,6 +234,43 @@ query_read("SELECT 1; DROP TABLE x")       → one statement only
 query_read("SELECT * INTO OUTFILE '...'")  → write attempt
 ```
 
+### Inspecting before writing code
+
+| Tool | For |
+|---|---|
+| `list_databases` | which schemas exist, charset and collation |
+| `search_schema` | "where is this column?" without dumping the whole schema |
+| `describe_table` | columns, indexes and foreign keys |
+| `show_create` | the exact DDL of a table, view, procedure, function, trigger or event |
+| `list_routines` | procedures, functions, triggers and events, with definer and dates |
+| `export_schema` | the whole schema as one runnable script (`DELIMITER ;;` included) |
+| `explain_query` | plan plus hints: full scan, no index, filesort, temporary, join buffer |
+| `validate_sql` | checks a statement with `PREPARE` **without running it**, plus its plan |
+
+`validate_sql` is the cheap pre-flight check: it prepares the statement on the server (syntax, tables,
+columns, privileges) and returns the plan, but executes nothing. Use it before `propose_write` so you
+do not spend a token on something that will fail. DDL is resolved at execution time, so its check is
+best effort; stored routines cannot be prepared at all (`valid: null`).
+
+`explain_query` accepts `format: "traditional" | "json" | "tree"` and `analyze: true`, which runs the
+`SELECT` and reports real timings (it is still read-only, but it does execute the query).
+
+`export_schema` is the fastest way to give an agent the shape of a database, or to commit the schema
+to git:
+
+```sql
+-- shop
+CREATE DATABASE IF NOT EXISTS `shop`;
+USE `shop`;
+
+DROP TABLE IF EXISTS `customers`;
+CREATE TABLE `customers` ( ... );
+
+DELIMITER ;;
+CREATE DEFINER=`root`@`%` PROCEDURE `total_orders`(...) BEGIN ... END;;
+DELIMITER ;
+```
+
 ---
 
 ## 5. Writing (always two steps)
@@ -248,6 +292,41 @@ What the server guarantees:
 - The statement and the connection must match the proposal exactly.
 - `UPDATE`/`DELETE` without `WHERE` requires explicit authorization (`allow_full_table`).
 - `DROP` and `TRUNCATE` are flagged as destructive.
+- One statement per call — except `CREATE PROCEDURE` / `FUNCTION` / `TRIGGER` / `EVENT`, whose
+  `BEGIN ... END` body needs internal semicolons. The body must end in `END` with nothing after it.
+- The token is bound to the statement **including the content of its literals**: `'uno  dos'` and
+  `'uno dos'` are different statements.
+- `CALL` also goes through the two steps: it runs stored code, so it counts as a write.
+
+### Creating objects (views, functions, procedures, indexes)
+
+Everything is a `propose_write` + `confirm_write`, with no `DELIMITER` needed:
+
+```sql
+CREATE OR REPLACE VIEW v_active AS SELECT id, name FROM customers WHERE active = 1
+CREATE INDEX idx_customers_email ON customers (email)
+CREATE FUNCTION double_it(p INT) RETURNS INT DETERMINISTIC BEGIN RETURN p * 2; END
+CREATE PROCEDURE bump(IN p_id INT) BEGIN UPDATE customers SET counter = counter + 1 WHERE id = p_id; END
+CALL bump(1)
+```
+
+To read them back: `list_routines` (which are there) and `show_create` (their DDL).
+
+### Migrations: several statements in one confirmation
+
+```
+You:  "create the invoices table and add the index"
+Agent: propose_script → plan of 3 statements + warnings + token
+You:  "go ahead"
+Agent: confirm_script → executed: 3, failedAt: null
+```
+
+- Each statement is classified separately: a `SELECT` inside the script is rejected.
+- The `;` inside a literal (`VALUES ('a;b')`) or inside a `BEGIN ... END` body does not split.
+- It stops at the first error and tells you which statement failed and what already ran.
+- `DELETE`/`UPDATE` without `WHERE` anywhere needs `allow_full_table=true`.
+- DDL cannot be rolled back: MySQL commits it implicitly, so the proposal always says so.
+- The limit is `MYSQL_MAX_SCRIPT_STATEMENTS` statements (100 by default).
 
 ---
 

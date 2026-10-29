@@ -44,17 +44,26 @@ const { tools } = await cliente.listTools();
 const names = tools.map((t) => t.name).sort();
 const expected = [
   "confirm_connection",
+  "confirm_script",
   "confirm_write",
   "connection_info",
   "describe_table",
+  "explain_query",
+  "export_schema",
   "list_connections",
+  "list_databases",
+  "list_routines",
   "list_tables",
+  "propose_script",
   "propose_write",
   "query_read",
   "remove_connection",
   "reset_credentials",
   "save_connection",
+  "search_schema",
+  "show_create",
   "use_connection",
+  "validate_sql",
 ];
 
 check(`${expected.length} herramientas registradas`, names.length === expected.length, names.join(", "));
@@ -81,7 +90,21 @@ const outfile = await callCli("query_read", { sql: "SELECT * FROM users INTO OUT
 check("blocks INTO OUTFILE", outfile.isError && /looks like it writes data/.test(outfile.txt), outfile.txt.slice(0, 70));
 
 const odd = await callCli("query_read", { sql: "CALL proc()" });
-check("blocks CALL", odd.isError && /Statement not allowed/.test(odd.txt), odd.txt.slice(0, 70));
+check("CALL is a write, not a read", odd.isError && /read-only/.test(odd.txt), odd.txt.slice(0, 70));
+
+const callProposal = await callCli("propose_write", { sql: "CALL proc()" });
+check(
+  "CALL is no longer rejected as a statement",
+  !/not allowed/i.test(callProposal.txt),
+  callProposal.txt.replace(/\s+/g, " ").slice(0, 70),
+);
+
+const literalSemicolon = await callCli("query_read", { sql: "SELECT 'a;b' AS texto" });
+check(
+  "a semicolon inside a literal is not a second statement",
+  !literalSemicolon.isError || !/Only ONE statement/.test(literalSemicolon.txt),
+  literalSemicolon.txt.slice(0, 80),
+);
 
 // Writes: nothing runs without a token.
 const missingToken = await callCli("confirm_write", {

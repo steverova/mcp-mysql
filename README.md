@@ -87,10 +87,15 @@ Answer yes and it calls `confirm_connection`. Nothing runs before you confirm.
 | "which database are you on?" | `connection_info` |
 | "yes, continue" | `confirm_connection` |
 | "connect to sales" | `use_connection` |
-| "show me the tables" | `list_tables` |
+| "show me the tables / the views" | `list_tables` (`type=table|view`) |
+| "where is the column `email`?" | `search_schema` |
+| "give me the DDL of `clientes`" | `show_create` |
+| "dump the whole schema" | `export_schema` |
+| "list the stored procedures" | `list_routines` |
+| "why is this query slow?" | `explain_query` (`analyze=true` to measure) |
 | "how many customers are there?" | `query_read` |
 
-Any data tool accepts `conexion` to target another connection without switching:
+Any data tool accepts `connection` to target another connection without switching:
 
 > "query sales without changing the active connection"
 
@@ -104,11 +109,31 @@ up a new default.
 
 | Tool | Writes? |
 |---|---|
-| `connection_info`, `list_connections`, `list_tables`, `describe_table` | No |
+| `connection_info`, `list_connections` | No |
+| `list_databases`, `list_tables`, `describe_table`, `search_schema` | No |
+| `list_routines`, `show_create`, `export_schema`, `explain_query` | No |
+| `validate_sql` (`PREPARE` + `EXPLAIN`: checks without running) | No |
 | `query_read` (`SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN`, `READ ONLY`) | No |
 | `propose_write` (validates, estimates impact, returns a token) | **No** |
 | `confirm_write` (runs only with a valid token) | Yes |
+| `propose_script` (plans a multi-statement migration, returns a token) | **No** |
+| `confirm_script` (runs the approved script, stops at the first error) | Yes |
 | `save_connection`, `use_connection`, `confirm_connection`, `remove_connection`, `reset_credentials` | No (config) |
+
+### Getting to know a database
+
+```
+list_databases                      schemas, charset, collation
+search_schema({ term: "factura" })  tables, columns, routines and triggers by name
+describe_table                       columns, indexes, foreign keys
+show_create({ type, name })          exact DDL of table/view/procedure/function/trigger/event
+export_schema                        the whole schema as one runnable script
+explain_query({ sql, analyze })      plan + hints (full scan, no index, filesort)
+validate_sql({ sql })                syntax, tables, columns and the plan: nothing runs
+```
+
+`export_schema` is the one to hand to an agent (or to commit): it emits `CREATE TABLE`, `CREATE
+VIEW`, routines, triggers and events with `DELIMITER ;;` where a body needs it.
 
 ### Writes take two steps
 
@@ -118,8 +143,35 @@ propose_write(sql)  ->  { token, impact, warnings }   nothing changed
 confirm_write(sql, token)  ->  { status: "EXECUTED", affected: N }
 ```
 
-The token is single-use, expires after 300 s, is bound to the statement and the connection, and
-`UPDATE`/`DELETE` without `WHERE` needs `allow_full_table=true`.
+The token is single-use, expires after 300 s, is bound to the statement **and its literals** and the
+connection, and `UPDATE`/`DELETE` without `WHERE` needs `allow_full_table=true`.
+
+### Stored routines, views and indexes
+
+One statement per call still applies to everything, **except** `CREATE PROCEDURE` / `FUNCTION` /
+`TRIGGER` / `EVENT`: their `BEGIN ... END` body needs internal semicolons, so they are allowed as a
+single statement. The body must close with `END` and carry nothing after it (`... END; DROP TABLE x`
+is rejected), and the connection runs with `multipleStatements: false`, so a trailing statement can
+never execute either.
+
+`CALL` is accepted through `propose_write` + `confirm_write` (it runs stored code, so it counts as a
+write). `CREATE VIEW`, `CREATE INDEX`, `ALTER VIEW` and `DROP ...` go through the same two steps.
+
+### Migrations: many statements, one confirmation
+
+```
+propose_script(script)  ->  { plan: [...], warnings, token }   nothing changed
+        ↓ you confirm
+confirm_script(script, token)  ->  { executed: N, results: [...], failedAt }
+```
+
+Each statement is classified on its own (a read inside the script is rejected), semicolons inside
+string literals or `BEGIN ... END` bodies are not treated as separators, and execution stops at the
+first error telling you exactly where. DDL cannot be rolled back, so the proposal always says so.
+`MYSQL_MAX_SCRIPT_STATEMENTS` (100 by default) caps the size.
+
+A whole `DELIMITER`-style dump still has to be applied line by line (`export_schema` gives you the
+script; `show_create` the pieces).
 
 ---
 
@@ -149,9 +201,14 @@ Only needed if you want to modify the code:
 ```bash
 npm install
 npm link          # same `mysql-mcp` command, running on Node
-npm run test:all  # 60 checks, no live MySQL needed
+npm run test:all  # protocol, classifier, store, form and OpenCode config: no MySQL needed
+npm run test:live # integration against a real database (views, routines, EXPLAIN; cleans up)
 npm run build     # rebuild the binary for your platform
 ```
+
+For `test:live`, either export `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE`, or point
+`MCP_MYSQL_STORE` at a `connections.json`. Run it against a development database: it creates and
+drops `mcp_live_*` objects.
 
 ## More
 
